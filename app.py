@@ -1,16 +1,15 @@
 from flask import Flask, request, jsonify
 import boto3
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelt 
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////home/ec2-user/tts-reader-aws-backend/database.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////home/ec2-user/tts-reader-aws_backend/database.db'
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret-key')
-app.config['JWTS']['access_token']['expires'] = datetime.timedelta(hours=1)
-
+app.config['JWTS']['access_token']['expires'] = timedelt(hours=1)
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
@@ -89,7 +88,7 @@ def setup_bucket():
 setup_bucket()
 
 # Registration endpoint
-@app.route('/register', methods=['POST'])
+@ app.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
     user_id = data['user_id']
@@ -105,7 +104,7 @@ def register():
     return jsonify({'message': 'User registered successfully'}), 201
 
 # Login endpoint
-@app.route('/login', methods=['POST'])
+@ app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
     user_id = data['user_id']
@@ -118,8 +117,8 @@ def login():
     return jsonify({'error': 'Invalid credentials'}), 401
 
 # Synthesize endpoint
-@app.route('/synthesize', methods=['POST'])
-@jwt_required
+@ app.route('/synthesize', methods=['POST'])
+@ jwt_required
 def synthesize():
     user_id = get_jwt_identity()
     data = request.get_json()
@@ -135,6 +134,9 @@ def synthesize():
         return jsonify({'message': 'User has exceeded their character limit'}), 403
 
     try:
+        audio_file_key = f'users/{user_id}/audio/speech.mp3'
+        speech_marks_file_key = f'users/{user_id}/speech_marks/speech_marks.json'
+
         audio_response = polly.synthesize_speech(
             Text=text_to_speech,
             OutputFormat='mp3',
