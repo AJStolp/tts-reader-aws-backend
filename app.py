@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import boto3
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime, timedelt 
+from datetime import datetime, timedelta
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
@@ -9,7 +9,7 @@ import os
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////home/ec2-user/tts-reader-aws_backend/database.db'
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret-key')
-app.config['JWTS']['access_token']['expires'] = timedelt(hours=1)
+app.config['JWTS']['access_token']['expires'] = timedelta(hours=1)
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
