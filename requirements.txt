@@ -3,3 +3,4 @@ Werkzeug==2.2.3
 boto3==1.20.24
 flask_sqlalchemy
 flask_jwt_extended
+python-dotenv==0.20.0
