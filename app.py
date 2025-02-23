@@ -4,10 +4,11 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timezone, timedelta
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
+import os
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////path/to/database.db'
-app.config['SECRET_KEY'] = 'your-secret-key'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////home/ec2-user/tts-reader-aws-backend/database.db'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret-key')
 app.config['JWTS']['access_token']['expires'] = datetime.timedelta(hours=1)
 
 db = SQLAlchemy(app)
@@ -15,7 +16,7 @@ jwt = JWTManager(app)
 
 class User(db.Model):
     id = db.Column(db.String, primary_key=True)
-    remaining_chars = db.Column(db.Int, default=100)
+    remaining_chars = db.Column(db.Integer, default=100)
     password_hash = db.Column(db.String(128))
 
     def set_password(self, password):
@@ -24,8 +25,18 @@ class User(db.Model):
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
+try:
+    region = os.environ['AWS_REGION']
+except KeyError:
+    raise ValueError("AWS_REGION environment variable is not set")
+
+try:
+    s3 = boto3.client('s3', region_name=region)
+    polly = boto3.client('polly', region_name=region)
+except Exception as e:
+    raise ValueError(f"Failed to create Boto3 clients: {e}")
+
 def generate_presigned_url(bucket, key, expiration=3600):
-    s3 = boto3.client('s3')
     url = s3.generate_presigned_url('get_object',
                                     Params={'Bucket': bucket, 'Key': key},
                                     expires_in=expiration)
@@ -35,7 +46,6 @@ main_bucket_name = 'my-app-bucket'
 logging_bucket_name = 'my-app-logging-bucket'
 
 def setup_bucket():
-    s3 = boto3.client('s3')
     try:
         s3.head_bucket(Bucket=main_bucket_name)
     except s3.exceptions.ClientError as e:
@@ -125,12 +135,6 @@ def synthesize():
         return jsonify({'message': 'User has exceeded their character limit'}), 403
 
     try:
-        polly = boto3.client('polly')
-        s3 = boto3.client('s3')
-
-        audio_file_key = f'users/{user_id}/audio/speech.mp3'
-        speech_marks_file_key = f'users/{user_id}/speech_marks/speech_marks.json'
-
         audio_response = polly.synthesize_speech(
             Text=text_to_speech,
             OutputFormat='mp3',
