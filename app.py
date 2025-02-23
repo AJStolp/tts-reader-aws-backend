@@ -1,119 +1,162 @@
 from flask import Flask, request, jsonify
 import boto3
-import json
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime, timezone, timedelta
+from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////path/to/database.db'
+app.config['SECRET_KEY'] = 'your-secret-key'
+app.config['JWTS']['access_token']['expires'] = datetime.timedelta(hours=1)
 
-@app.route('/synthesize', methods=['POST'])
-def synthesize():
+db = SQLAlchemy(app)
+jwt = JWTManager(app)
+
+class User(db.Model):
+    id = db.Column(db.String, primary_key=True)
+    remaining_chars = db.Column(db.Int, default=100)
+    password_hash = db.Column(db.String(128))
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+def generate_presigned_url(bucket, key, expiration=3600):
+    s3 = boto3.client('s3')
+    url = s3.generate_presigned_url('get_object',
+                                    Params={'Bucket': bucket, 'Key': key},
+                                    expires_in=expiration)
+    return url
+
+main_bucket_name = 'my-app-bucket'
+logging_bucket_name = 'my-app-logging-bucket'
+
+def setup_bucket():
+    s3 = boto3.client('s3')
+    try:
+        s3.head_bucket(Bucket=main_bucket_name)
+    except s3.exceptions.ClientError as e:
+        error_code = int(e.response['Error']['Code'])
+        if error_code == 404:
+            s3.create_bucket(Bucket=main_bucket_name)
+            s3.put_public_access_block(
+                Bucket=main_bucket_name,
+                PublicAccessBlockConfiguration={'BlockPublicAcls': True, 'IgnorePublicAcls': True, 'BlockPublicPolicy': True, 'RestrictPublicBuckets': True}
+            )
+            s3.put_bucket_versioning(
+                Bucket=main_bucket_name,
+                VersioningConfiguration={'Status': 'Enabled'}
+            )
+            cors_configuration = {
+                'CORSRules': [
+                    {
+                        'AllowedHeaders': ['Authorization'],
+                        'AllowedMethods': ['GET', 'HEAD', 'PUT', 'POST', 'DELETE'],
+                        'AllowedOrigins': ['*'],
+                        'ExposeHeaders': ['ETag'],
+                        'MaxAgeSeconds': 3000
+                    }
+                ]
+            }
+            s3.put_bucket_cors(Bucket=main_bucket_name, CORSConfiguration=cors_configuration)
+            
+            # Ensure logging bucket exists
+            try:
+                s3.head_bucket(Bucket=logging_bucket_name)
+            except s3.exceptions.ClientError as e:
+                error_code = int(e.response['Error']['Code'])
+                if error_code == 404:
+                    s3.create_bucket(Bucket=logging_bucket_name)
+            
+            s3.put_bucketlogging(
+                Bucket=main_bucket_name,
+                BucketLoggingStatus={'LoggingEnabled': {'TargetBucket': logging_bucket_name, 'TargetPrefix': ''}}
+            )
+
+setup_bucket()
+
+# Registration endpoint
+@app.route('/register', methods=['POST'])
+def register():
     data = request.get_json()
     user_id = data['user_id']
+    password = data['password']
+    
+    if User.query.get(user_id):
+        return jsonify({'error': 'User already exists'}), 400
+    
+    user = User(id=user_id)
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+    return jsonify({'message': 'User registered successfully'}), 201
+
+# Login endpoint
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    user_id = data['user_id']
+    password = data['password']
+    
+    user = User.query.get(user_id)
+    if user and user.check_password(password):
+        access_token = create_access_token(identity=user_id)
+        return jsonify({'token': access_token}), 200
+    return jsonify({'error': 'Invalid credentials'}), 401
+
+# Synthesize endpoint
+@app.route('/synthesize', methods=['POST'])
+@jwt_required
+def synthesize():
+    user_id = get_jwt_identity()
+    data = request.get_json()
     text_to_speech = data['text_to_speech']
+    voice_id = data.get('voice_id', 'Ivy')
+    text_length = len(text_to_speech)
 
-    polly = boto3.client('polly')
-    s3 = boto3.client('s3')
+    user = User.query.get(user_id)
+    if user is None:
+        return jsonify({'error': 'User not found'}), 404
 
-    bucket_name = f'user-bucket-{user_id}'
-    audio_file_name = 'audio/speech.mp3'
-    speech_marks_file_name = 'speech_marks/speech_marks.json'
-    logging_bucket = f'tts-neural-reader-logs-{user_id}'
-
-    cors_configuration = {
-        'CORSRules': [
-            {
-                'AllowedHeaders': ['Authorization'],
-                'AllowedMethods': ['GET', 'HEAD', 'PUT', 'POST', 'DELETE'],
-                'AllowedOrigins': ['*'],
-                'ExposeHeaders': ['ETag'],
-                'MaxAgeSeconds': 3000
-            }
-        ]
-    }
-
-    bucket_policy = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Effect": "Allow",
-                "Principal": "*",
-                "Action": ["s3:GetObject"],
-                "Resource": f"arn:aws:s3:::{bucket_name}/*"
-            }
-        ]
-    }
+    if text_length > user.remaining_chars:
+        return jsonify({'message': 'User has exceeded their character limit'}), 403
 
     try:
-        s3.create_bucket(Bucket=bucket_name)
-        s3.put_public_access_block(
-            Bucket=bucket_name,
-            PublicAccessBlockConfiguration={
-                'BlockPublicAcls': False,
-                'IgnorePublicAcls': False,
-                'BlockPublicPolicy': False,
-                'RestrictPublicBuckets': False
-            }
-        )
-        s3.put_bucket_versioning(
-            Bucket=bucket_name,
-            VersioningConfiguration={
-                'Status': 'Enabled'
-            }
-        )
-        s3.put_bucket_cors(
-            Bucket=bucket_name,
-            CORSConfiguration=cors_configuration
-        )
-        s3.put_bucket_policy(
-            Bucket=bucket_name,
-            Policy=json.dumps(bucket_policy)
-        )
+        polly = boto3.client('polly')
+        s3 = boto3.client('s3')
+
+        audio_file_key = f'users/{user_id}/audio/speech.mp3'
+        speech_marks_file_key = f'users/{user_id}/speech_marks/speech_marks.json'
 
         audio_response = polly.synthesize_speech(
             Text=text_to_speech,
             OutputFormat='mp3',
-            VoiceId='Joanna'
+            VoiceId=voice_id,
+            Engine='neural'
         )
         audio_stream = audio_response['AudioStream'].read()
-        s3.put_object(Bucket=bucket_name, Key=audio_file_name, Body=audio_stream)
+        s3.put_object(Bucket=main_bucket_name, Key=audio_file_key, Body=audio_stream)
 
         speech_marks_response = polly.synthesize_speech(
             Text=text_to_speech,
             OutputFormat='json',
-            VoiceId='Joanna',
-            SpeechMarkTypes=['word']
+            VoiceId=voice_id,
+            SpeechMarkTypes=['word'],
+            Engine='neural'
         )
         speech_marks = speech_marks_response['AudioStream'].read()
-        s3.put_object(Bucket=bucket_name, Key=speech_marks_file_name, Body=speech_marks)
+        s3.put_object(Bucket=main_bucket_name, Key=speech_marks_file_key, Body=speech_marks)
 
-        try:
-            s3.head_bucket(Bucket=logging_bucket)
-        except s3.exceptions.ClientError as e:
-            error_code = int(e.response['Error']['Code'])
-            if error_code == 404:
-                s3.create_bucket(Bucket=logging_bucket)
+        audio_url = generate_presigned_url(main_bucket_name, audio_file_key)
+        speech_marks_url = generate_presigned_url(main_bucket_name, speech_marks_file_key)
 
-        s3.put_bucket_logging(
-            Bucket=bucket_name,
-            BucketLoggingStatus={
-                'LoggingEnabled': {
-                    'TargetBucket': logging_bucket,
-                    'TargetPrefix': f'{bucket_name}/'
-                }
-            }
-        )
-        s3.put_bucket_tagging(
-            Bucket=bucket_name,
-            Tagging={
-                'TagSet': [
-                    {
-                        'Key': 'UserID',
-                        'Value': user_id
-                    }
-                ]
-            }
-        )
+        user.remaining_chars -= text_length
+        db.session.commit()
 
-        return jsonify({'message': 'Files successfully uploaded and bucket created!'}), 200
+        return jsonify({'audio_url': audio_url, 'speech_marks_url': speech_marks_url}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
