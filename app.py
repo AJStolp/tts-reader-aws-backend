@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 from flask import Flask, request, jsonify
 import boto3
 from flask_sqlalchemy import SQLAlchemy
