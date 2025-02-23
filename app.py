@@ -9,7 +9,7 @@ import os
 app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////home/ec2-user/tts-reader-aws_backend/database.db'
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret-key')
-app.config['JWTS']['access_token']['expires'] = timedelta(hours=1)
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1) 
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
@@ -80,7 +80,7 @@ def setup_bucket():
                 if error_code == 404:
                     s3.create_bucket(Bucket=logging_bucket_name)
             
-            s3.put_bucketlogging(
+            s3.put_bucket_logging(
                 Bucket=main_bucket_name,
                 BucketLoggingStatus={'LoggingEnabled': {'TargetBucket': logging_bucket_name, 'TargetPrefix': ''}}
             )
@@ -88,7 +88,7 @@ def setup_bucket():
 setup_bucket()
 
 # Registration endpoint
-@ app.route('/register', methods=['POST'])
+@app.route('/register', methods=['POST'])
 def register():
     data = request.get_json()
     user_id = data['user_id']
@@ -104,7 +104,7 @@ def register():
     return jsonify({'message': 'User registered successfully'}), 201
 
 # Login endpoint
-@ app.route('/login', methods=['POST'])
+@app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
     user_id = data['user_id']
@@ -117,8 +117,8 @@ def login():
     return jsonify({'error': 'Invalid credentials'}), 401
 
 # Synthesize endpoint
-@ app.route('/synthesize', methods=['POST'])
-@ jwt_required
+@app.route('/synthesize', methods=['POST'])
+@jwt_required()
 def synthesize():
     user_id = get_jwt_identity()
     data = request.get_json()
