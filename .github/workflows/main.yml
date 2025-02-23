@@ -17,7 +17,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_PRIVATE_KEY }}
           script: |
-            cd /home/ec2-user/tts-reader-aws_backend || exit
+            cd /home/ec2-user/tts-reader-aws-backend || exit
             echo "Current directory: $(pwd)"
             echo "Git status before pull:"
             git status
