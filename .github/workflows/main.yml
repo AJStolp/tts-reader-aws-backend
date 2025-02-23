@@ -24,4 +24,4 @@ jobs:
             git pull origin main
             echo "Git status after pull:"
             git status
-            sudo systemctl restart tts_reader_backend
+            sudo systemctl restart tts-reader-backend
