@@ -1,5 +1,7 @@
 from app import app, db
+from sqlalchemy import inspect
 
 with app.app_context():
-    if not db.engine.has_table('user'):
+    inspector = inspect(db.engine)
+    if not inspector.has_table('user'):
         db.create_all()
