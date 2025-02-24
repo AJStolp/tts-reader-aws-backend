@@ -9,7 +9,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import os
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////home/ec2-user/tts-reader-aws_backend/database.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////home/ec2-user/tts-reader-aws-backend/database.db'
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default-secret-key')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1) 
 db = SQLAlchemy(app)
