@@ -27,7 +27,9 @@ load_dotenv()
 app = Flask(__name__)
 
 # CORS configuration for frontend (e.g., localhost:3000 for development)
-CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000"]}}, supports_credentials=True)
+CORS(app, resources={
+    r"/*": {"origins": ["http://localhost:3000"], "methods": ["GET", "POST", "OPTIONS"]}
+}, supports_credentials=True)
 
 # Configuration
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(os.getcwd(), "database.db")}'
