@@ -1,6 +1,5 @@
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
-from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import (
     JWTManager,
     create_access_token,
@@ -9,20 +8,24 @@ from flask_jwt_extended import (
     get_jwt,
     get_jwt_identity
 )
-from werkzeug.security import generate_password_hash, check_password_hash
 import boto3
 import os
 import time
 import json
 import logging
+import uuid
 from flask_cors import CORS
 from typing import Optional
 import io
 from pydub import AudioSegment
+from models import User
+from database import db
+from flask_migrate import Migrate
+
 
 # Load environment variables
 load_dotenv()
-
+print(f'{os.getenv("DATABASE_CONNECTION_STRING", "")=}')
 # Initialize Flask app
 app = Flask(__name__)
 
@@ -31,31 +34,19 @@ CORS(app, resources={
     r"/*": {"origins": ["http://localhost:3000"], "methods": ["GET", "POST", "OPTIONS"]}
 }, supports_credentials=True)
 
+
 # Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(os.getcwd(), "database.db")}'
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_CONNECTION_STRING", "")
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'strong-secret-key-change-this-in-prod')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 24 * 60 * 60  # 1 day (24 hours) for access tokens
 app.config['JWT_REFRESH_TOKEN_EXPIRES'] = 24 * 60 * 60  # 1 day (24 hours) for refresh tokens
 
 # Initialize SQLAlchemy and JWT
-db = SQLAlchemy(app)
+db.init_app(app)
 jwt = JWTManager(app)
+migrate = Migrate(app, db)
 
-# User model with added preferences fields
-class User(db.Model):
-    id = db.Column(db.String, primary_key=True)
-    remaining_chars = db.Column(db.Integer, default=100)
-    password_hash = db.Column(db.String(128))
-    engine = db.Column(db.String, default='standard')  # New field for engine preference
-    voice_id = db.Column(db.String, default='Joey')    # New field for voice preference
 
-    def set_password(self, password: str) -> None:
-        """Hash and set the user's password."""
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password: str) -> bool:
-        """Check if the provided password matches the stored hash."""
-        return check_password_hash(self.password_hash, password)
 
 # AWS setup
 def get_aws_clients() -> tuple[boto3.client, boto3.client]:
@@ -170,17 +161,18 @@ def split_text(text, chunk_size):
 def register() -> tuple[dict, int]:
     """Register a new user."""
     data = request.get_json()
-    user_id = data.get('user_id')
+    username = data.get('username')
     password = data.get('password')
-    if not user_id or not password:
+    print(f"{User.query.filter_by(username=username).first()=}")
+    if not username or not password:
         return jsonify({'error': 'User ID and password are required'}), 400
-    if User.query.get(user_id):
+    if User.query.filter_by(username=username).first():
         return jsonify({'error': 'User already exists'}), 400
-    user = User(id=user_id)
+    user = User(user_id=uuid.uuid4(), username=username)
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
-    logger.info(f"User {user_id} registered successfully")
+    logger.info(f"User {username} registered successfully")
     return jsonify({'message': 'User registered successfully'}), 201
 
 @app.route('/api/login', methods=['POST'])
@@ -430,3 +422,4 @@ if __name__ == '__main__':
         db.drop_all()  # Drop existing tables to apply new schema
         db.create_all()  # Create tables with updated schema
     app.run(debug=True, host='0.0.0.0', port=5000)
+    
