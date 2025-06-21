@@ -164,7 +164,7 @@ def register() -> tuple[dict, int]:
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
-    print(f"{User.query.filter_by(username=username).first()=}")
+    # print(f"{User.query.filter_by(username=username).first()=}")
     if not username or not password:
         return jsonify({'error': 'User ID and password are required'}), 400
     if User.query.filter_by(username=username).first():
@@ -180,15 +180,15 @@ def register() -> tuple[dict, int]:
 def login() -> tuple[dict, int]:
     """Authenticate a user and return access and refresh tokens."""
     data = request.get_json()
-    user_id = data.get('user_id')
+    username = data.get('username')
     password = data.get('password')
-    if not user_id or not password:
+    if not username or not password:
         return jsonify({'error': 'User ID and password are required'}), 400
-    user = User.query.get(user_id)
+    user = User.query.filter_by(username=username).first()
     if user and user.check_password(password):
-        access_token = create_access_token(identity=user_id)
-        refresh_token = create_refresh_token(identity=user_id)
-        log_user_data(user_id, 'login')
+        access_token = create_access_token(identity=username)
+        refresh_token = create_refresh_token(identity=username)
+        log_user_data(username, 'login')
         return jsonify({
             'access_token': access_token,
             'refresh_token': refresh_token
