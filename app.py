@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, url_for, redirect
 from flask_jwt_extended import (
     JWTManager,
     create_access_token,
@@ -14,6 +14,7 @@ import time
 import json
 import logging
 import uuid
+import stripe
 from flask_cors import CORS
 from typing import Optional
 import io
@@ -213,6 +214,59 @@ def logout() -> tuple[dict, int]:
     user_id = get_jwt_identity()
     log_user_data(user_id, 'logout')
     return jsonify({'message': 'Logged out successfully'}), 200
+
+@app.route("/create-checkout-session", methods=["POST"])
+@jwt_required
+def create_checkout_session():
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price": os.environ.get("STRIPE_PRICE_ID"),
+                    "quantity": 1,
+                }
+            ],
+            mode="subscription",
+            success_url=url_for("success", _external=True),
+            cancel_url=url_for("home", _external=True),
+            client_reference_id=str(current_user.id),
+        )
+        return redirect(checkout_session.url, code=303)
+    except Exception as e:
+        return str(e)
+
+@app.route('/api/webhook', methods=['POST'])
+def webhook():
+    print("webhook received")
+    payload = request.data
+    sig_header = request.headers.get("Stripe-Signature")
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, os.environ.get("STRIPE_WEBHOOK_SECRET")
+        )
+    except ValueError:
+        print("Invalid payload")
+        return "Invalid payload", 400
+    except stripe.error.SignatureVerificationError:
+        print("Invalid signature")
+        return "Invalid signature", 400
+
+    # Handle the event
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        user_id = session["client_reference_id"]
+        subscription_id = session["subscription"]
+        db.set_stripe_subscription_id(user_id, subscription_id)
+
+    elif event["type"] == "customer.subscription.deleted":
+        subscription = event["data"]["object"]
+        subscription_id = subscription["id"]
+        db.set_stripe_subscription_id(user_id, None)
+
+    return "", 200
+
 
 @app.route('/api/synthesize', methods=['POST'])
 @jwt_required()
