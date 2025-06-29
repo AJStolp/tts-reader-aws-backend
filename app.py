@@ -138,12 +138,12 @@ class Token(BaseModel):
     refresh_token: Optional[str] = None
 
 class ExtractRequest(BaseModel):
-    url: str = Field(..., pattern=r"^https?://.*")
+    url: str = Field(..., regex=r"^https?://.*")
 
 class SynthesizeRequest(BaseModel):
     text_to_speech: str = Field(..., min_length=1, max_length=100000)
     voice_id: str = Field(default="Joanna", max_length=50)
-    engine: str = Field(default="standard", pattern="^(standard|neural)$")
+    engine: str = Field(default="standard", regex="^(standard|neural)$")
 
 class ExtractResponse(BaseModel):
     text: str
