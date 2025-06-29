@@ -1,6 +1,5 @@
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify
-from flask_sqlalchemy import SQLAlchemy
+from flask import Flask, request, jsonify, url_for, redirect
 from flask_jwt_extended import (
     JWTManager,
     create_access_token,
@@ -9,20 +8,25 @@ from flask_jwt_extended import (
     get_jwt,
     get_jwt_identity
 )
-from werkzeug.security import generate_password_hash, check_password_hash
 import boto3
 import os
 import time
 import json
 import logging
+import uuid
+import stripe
 from flask_cors import CORS
 from typing import Optional
 import io
 from pydub import AudioSegment
+from models import User
+from database import db
+from flask_migrate import Migrate
+
 
 # Load environment variables
 load_dotenv()
-
+print(f'{os.getenv("DATABASE_CONNECTION_STRING", "")=}')
 # Initialize Flask app
 app = Flask(__name__)
 
@@ -31,31 +35,18 @@ CORS(app, resources={
     r"/*": {"origins": ["http://localhost:3000"], "methods": ["GET", "POST", "OPTIONS"]}
 }, supports_credentials=True)
 
+
 # Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(os.getcwd(), "database.db")}'
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_CONNECTION_STRING", "")
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'strong-secret-key-change-this-in-prod')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 24 * 60 * 60  # 1 day (24 hours) for access tokens
 app.config['JWT_REFRESH_TOKEN_EXPIRES'] = 24 * 60 * 60  # 1 day (24 hours) for refresh tokens
 
 # Initialize SQLAlchemy and JWT
-db = SQLAlchemy(app)
+db.init_app(app)
 jwt = JWTManager(app)
+migrate = Migrate(app, db)
 
-# User model with added preferences fields
-class User(db.Model):
-    id = db.Column(db.String, primary_key=True)
-    remaining_chars = db.Column(db.Integer, default=100)
-    password_hash = db.Column(db.String(128))
-    engine = db.Column(db.String, default='standard')  # New field for engine preference
-    voice_id = db.Column(db.String, default='Joey')    # New field for voice preference
-
-    def set_password(self, password: str) -> None:
-        """Hash and set the user's password."""
-        self.password_hash = generate_password_hash(password)
-
-    def check_password(self, password: str) -> bool:
-        """Check if the provided password matches the stored hash."""
-        return check_password_hash(self.password_hash, password)
 
 # AWS setup
 def get_aws_clients() -> tuple[boto3.client, boto3.client]:
@@ -170,32 +161,37 @@ def split_text(text, chunk_size):
 def register() -> tuple[dict, int]:
     """Register a new user."""
     data = request.get_json()
-    user_id = data.get('user_id')
+    username = data.get('username')
     password = data.get('password')
-    if not user_id or not password:
-        return jsonify({'error': 'User ID and password are required'}), 400
-    if User.query.get(user_id):
+    email = data.get('email')
+    first_name = data.get('firstName')
+    last_name = data.get('lastName')
+    # print(f"{User.query.filter_by(username=username).first()=}")
+    if not username or not password:
+        return jsonify({'error': 'username and password are required'}), 400
+    if User.query.filter_by(username=username).first():
         return jsonify({'error': 'User already exists'}), 400
-    user = User(id=user_id)
+    user = User(user_id=uuid.uuid4(), username=username, email=email, first_name=first_name, last_name=last_name)
     user.set_password(password)
+
     db.session.add(user)
     db.session.commit()
-    logger.info(f"User {user_id} registered successfully")
+    logger.info(f"User {username} registered successfully")
     return jsonify({'message': 'User registered successfully'}), 201
 
 @app.route('/api/login', methods=['POST'])
 def login() -> tuple[dict, int]:
     """Authenticate a user and return access and refresh tokens."""
     data = request.get_json()
-    user_id = data.get('user_id')
+    username = data.get('username')
     password = data.get('password')
-    if not user_id or not password:
+    if not username or not password:
         return jsonify({'error': 'User ID and password are required'}), 400
-    user = User.query.get(user_id)
+    user = User.query.filter_by(username=username).first()
     if user and user.check_password(password):
-        access_token = create_access_token(identity=user_id)
-        refresh_token = create_refresh_token(identity=user_id)
-        log_user_data(user_id, 'login')
+        access_token = create_access_token(identity=username)
+        refresh_token = create_refresh_token(identity=username)
+        log_user_data(username, 'login')
         return jsonify({
             'access_token': access_token,
             'refresh_token': refresh_token
@@ -221,6 +217,73 @@ def logout() -> tuple[dict, int]:
     user_id = get_jwt_identity()
     log_user_data(user_id, 'logout')
     return jsonify({'message': 'Logged out successfully'}), 200
+
+@app.route("/api/create-checkout-session", methods=["POST"])
+@jwt_required()
+def create_checkout_session():
+    username = get_jwt_identity()
+    print(f"{username=}")
+    print(f"{os.environ.get('STRIPE_API_KEY')}")
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price": "price_1RcGYRQwS4m9kgMV6C1wAZcN",
+                    "quantity": 1,
+                }
+            ],
+            mode="subscription",
+            success_url="http://localhost:3000/success",
+            cancel_url="http://localhost:3000/failed",
+            client_reference_id=str(username),
+            api_key=os.environ.get("STRIPE_API_KEY")
+            # metadata={"username": username}
+        )
+        print(f"{checkout_session.url=}")
+        return jsonify({'url': checkout_session.url}), 200
+    except Exception as e:
+        print(f"{e=}")
+        return str(e)
+
+@app.route('/api/stripe_webhook', methods=['POST'])
+def webhook():
+    print("webhook received")
+    payload = request.data
+    print(f"{payload=}")
+    sig_header = request.headers.get("Stripe-Signature")
+    
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, os.environ.get("STRIPE_WEBHOOK_SECRET")
+        )
+    except ValueError:
+        print("Invalid payload")
+        return "Invalid payload", 400
+    except stripe.error.SignatureVerificationError:
+        print("Invalid signature")
+        return "Invalid signature", 400
+
+    # Handle the event
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        print(f"{session=}")
+        username = session["client_reference_id"]
+        user = User.query.filter_by(username=username).first()
+        subscription_id = session["customer"]
+        user.stripe_subscription_id = subscription_id
+        db.session.commit()
+
+    elif event["type"] == "customer.subscription.deleted":
+        session = event["data"]["object"]
+        print(f"{session=}")
+        username = session["metadata"]["username"]
+        subscription = event["data"]["object"]
+        subscription_id = subscription["id"]
+        db.set_stripe_subscription_id(username, None)
+
+    return "", 200
+
 
 @app.route('/api/synthesize', methods=['POST'])
 @jwt_required()
@@ -314,11 +377,11 @@ def synthesize() -> tuple[dict, int]:
 @jwt_required()
 def get_usage() -> tuple[dict, int]:
     """Retrieve the user's remaining character limit."""
-    user_id = get_jwt_identity()
-    user = User.query.get(user_id)
+    username = get_jwt_identity()
+    user = User.query.filter_by(username=username).first()
     if not user:
         return jsonify({'error': 'User not found'}), 404
-    log_user_data(user_id, 'usage_check', {'remaining_chars': user.remaining_chars})
+    log_user_data(username, 'usage_check', {'remaining_chars': user.remaining_chars})
     return jsonify({'remaining_chars': user.remaining_chars}), 200
 
 @app.route('/api/admin/set_free_chars', methods=['POST'])
@@ -346,39 +409,45 @@ def set_free_chars() -> tuple[dict, int]:
     return jsonify({'message': f'Free characters for {target_user_id} set to {new_chars}'}), 200
 
 # New endpoint to get preferences
-@app.route('/api/preferences', methods=['GET'])
+@app.route('/api/preferences', methods=['GET', 'POST'])
 @jwt_required()
 def get_preferences():
     """Retrieve the user's current engine and voice preferences."""
-    user_id = get_jwt_identity()
-    user = User.query.get(user_id)
+    print(f"{request.method}")
+    username = get_jwt_identity()
+    user = User.query.filter_by(username=username).first()
+    print(f"{user=}")
     if not user:
         return jsonify({'error': 'User not found'}), 404
-    preferences = {
-        'engine': user.engine,
-        'voice_id': user.voice_id
-    }
-    return jsonify(preferences), 200
+    if request.method == "POST":
+        data = request.get_json()
+        engine = data.get('engine')
+        voice_id = data.get('voice_id')
+        
+        if engine not in ['standard', 'neural']:
+            return jsonify({'error': 'Invalid engine type. Use "standard" or "neural".'}), 400
+        user.engine = engine
+        user.voice_id = voice_id
+        db.session.commit()
+        return jsonify({'message': 'Preferences updated successfully'}), 200
+    elif request.method == "GET":
+        preferences = {
+            'engine': user.engine,
+            'voice_id': user.voice_id
+        }
+        return jsonify(preferences), 200
 
-# New endpoint to set preferences
-@app.route('/api/preferences', methods=['POST'])
-@jwt_required()
-def set_preferences():
-    """Set the user's engine and voice preferences."""
-    user_id = get_jwt_identity()
-    data = request.get_json()
-    engine = data.get('engine')
-    voice_id = data.get('voice_id')
-    if engine not in ['standard', 'neural']:
-        return jsonify({'error': 'Invalid engine type. Use "standard" or "neural".'}), 400
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-    user.engine = engine
-    user.voice_id = voice_id
-    db.session.commit()
-    return jsonify({'message': 'Preferences updated successfully'}), 200
-
+# Need to test the new function that combines the get and post request before deleting this code
+# @app.route('/api/preferences', methods=['POST'])
+# @jwt_required()
+# def set_preferences():
+#     """Set the user's engine and voice preferences."""
+#     user_id = get_jwt_identity()
+    
+#     user = User.query.get(user_id)
+#     if not user:
+#         return jsonify({'error': 'User not found'}), 404
+    
 # New endpoint to get voices
 @app.route('/api/voices', methods=['GET'])
 def get_voices():
@@ -430,3 +499,4 @@ if __name__ == '__main__':
         db.drop_all()  # Drop existing tables to apply new schema
         db.create_all()  # Create tables with updated schema
     app.run(debug=True, host='0.0.0.0', port=5000)
+    
