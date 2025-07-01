@@ -1,4 +1,7 @@
 .env*
 .python-version
 .venv
-__pycache__
+__pycache__tts_reader_env/
+__pycache__/
+*.pyc
+.env
