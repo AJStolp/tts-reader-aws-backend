@@ -19,7 +19,8 @@ async def check_dependencies():
         "JWT_SECRET_KEY",
         "AWS_ACCESS_KEY_ID", 
         "AWS_SECRET_ACCESS_KEY",
-        "AWS_REGION"
+        "AWS_REGION",
+        "DATABASE_CONNECTION_STRING"  # Added Supabase connection string
     ]
     
     missing_vars = []
@@ -83,38 +84,19 @@ async def check_dependencies():
     return True
 
 async def initialize_database():
-    """Initialize database tables"""
+    """Initialize Supabase database connection"""
     logger.info("Initializing database...")
     
     try:
-        from sqlalchemy import create_engine, Column, String, Integer, DateTime, Boolean
-        from sqlalchemy.orm import declarative_base
-        from datetime import datetime
+        # Import our Supabase database manager
+        from database import DatabaseManager
         
-        # Get database URL from environment
-        DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./database.db")
+        # Test database connection
+        db_manager = DatabaseManager()
+        if not db_manager.test_connection():
+            logger.error("✗ Failed to connect to Supabase database")
+            return False
         
-        engine = create_engine(
-            DATABASE_URL,
-            connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-        )
-        
-        # Create Base and User model locally to avoid import issues
-        Base = declarative_base()
-        
-        class User(Base):
-            __tablename__ = "users"
-            
-            id = Column(String, primary_key=True, index=True)
-            password_hash = Column(String(255), nullable=False)
-            remaining_chars = Column(Integer, default=100000)
-            engine = Column(String(20), default="standard")
-            voice_id = Column(String(50), default="Joanna")
-            is_active = Column(Boolean, default=True)
-            created_at = Column(DateTime, default=datetime.utcnow)
-            last_login = Column(DateTime, nullable=True)
-        
-        Base.metadata.create_all(bind=engine)
         logger.info("✓ Database tables created/verified")
         return True
         
