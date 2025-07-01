@@ -1,256 +1,467 @@
-from dotenv import load_dotenv
-from flask import Flask, request, jsonify, url_for, redirect
-from flask_jwt_extended import (
-    JWTManager,
-    create_access_token,
-    create_refresh_token,
-    jwt_required,
-    get_jwt,
-    get_jwt_identity
-)
-import boto3
 import os
 import time
 import json
 import logging
+import io
 import uuid
 import stripe
-from flask_cors import CORS
 from typing import Optional
-import io
+from datetime import datetime, timedelta
+from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, EmailStr
+import boto3
+from botocore.exceptions import ClientError, NoCredentialsError
 from pydub import AudioSegment
+import asyncio
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session
+from textract_processor import extract_content
+
+# Import our Supabase-enabled database components
+from database import get_db, health_check as db_health_check
 from models import User
-from database import db
-from flask_migrate import Migrate
 
-
-# Load environment variables
-load_dotenv()
-print(f'{os.getenv("DATABASE_CONNECTION_STRING", "")=}')
-# Initialize Flask app
-app = Flask(__name__)
-
-# CORS configuration for frontend (e.g., localhost:3000 for development)
-CORS(app, resources={
-    r"/*": {"origins": ["http://localhost:3000"], "methods": ["GET", "POST", "OPTIONS"]}
-}, supports_credentials=True)
-
-
-# Configuration
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_CONNECTION_STRING", "")
-app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'strong-secret-key-change-this-in-prod')
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 24 * 60 * 60  # 1 day (24 hours) for access tokens
-app.config['JWT_REFRESH_TOKEN_EXPIRES'] = 24 * 60 * 60  # 1 day (24 hours) for refresh tokens
-
-# Initialize SQLAlchemy and JWT
-db.init_app(app)
-jwt = JWTManager(app)
-migrate = Migrate(app, db)
-
-
-# AWS setup
-def get_aws_clients() -> tuple[boto3.client, boto3.client]:
-    """Initialize and return AWS S3 and Polly clients with error handling."""
-    try:
-        region = os.environ['AWS_REGION']
-    except KeyError:
-        raise ValueError("AWS_REGION environment variable is not set")
-
-    try:
-        s3 = boto3.client('s3', region_name=region)
-        polly = boto3.client('polly', region_name=region)
-        return s3, polly
-    except Exception as e:
-        raise ValueError(f"Failed to create AWS clients: {str(e)}")
-
-s3, polly = get_aws_clients()
-
-# Function to generate signed URLs
-def generate_presigned_url(bucket: str, key: str, expiration: int = 3600) -> str:
-    """Generate a presigned URL for an S3 object."""
-    try:
-        url = s3.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': bucket, 'Key': key},
-            ExpiresIn=expiration
-        )
-        return url
-    except Exception as e:
-        logging.error(f"Failed to generate presigned URL: {str(e)}")
-        raise
-
-# S3 bucket configuration
-bucket_name = 'tts-neural-reader-data'
-
-def setup_bucket() -> None:
-    """Set up and configure the S3 bucket with security and logging."""
-    try:
-        s3.head_bucket(Bucket=bucket_name)
-    except s3.exceptions.ClientError as e:
-        if int(e.response['Error']['Code']) == 404:
-            s3.create_bucket(Bucket=bucket_name)
-            s3.put_public_access_block(
-                Bucket=bucket_name,
-                PublicAccessBlockConfiguration={
-                    'BlockPublicAcls': True,
-                    'IgnorePublicAcls': True,
-                    'BlockPublicPolicy': True,
-                    'RestrictPublicBuckets': True
-                }
-            )
-            s3.put_bucket_versioning(
-                Bucket=bucket_name,
-                VersioningConfiguration={'Status': 'Enabled'}
-            )
-            cors_configuration = {
-                'CORSRules': [
-                    {
-                        'AllowedHeaders': ['*'],
-                        'AllowedMethods': ['GET', 'HEAD'],
-                        'AllowedOrigins': ['*'],
-                        'ExposeHeaders': ['ETag'],
-                        'MaxAgeSeconds': 3000
-                    }
-                ]
-            }
-            s3.put_bucket_cors(Bucket=bucket_name, CORSConfiguration=cors_configuration)
-
-    s3.put_bucket_logging(
-        Bucket=bucket_name,
-        BucketLoggingStatus={
-            'LoggingEnabled': {
-                'TargetBucket': bucket_name,
-                'TargetPrefix': 'logs/'
-            }
-        }
-    )
-
-# Initialize the bucket
-setup_bucket()
-
-# Logging configuration
-logging.basicConfig(level=logging.INFO)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# Maximum text length per chunk for AWS Polly
-MAX_TEXT_LENGTH = 5900
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
 
-def split_text(text, chunk_size):
-    """Split text into chunks of specified size, ensuring splits occur at word boundaries."""
-    words = text.split()
-    chunks = []
-    current_chunk = []
-    for word in words:
-        if current_chunk:
-            potential_chunk = ' '.join(current_chunk + [word])
-            if len(potential_chunk) > chunk_size:
-                chunks.append(' '.join(current_chunk))
-                current_chunk = [word]
-            else:
-                current_chunk.append(word)
+# Environment validation
+REQUIRED_ENV_VARS = [
+    "JWT_SECRET_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_REGION",
+    "DATABASE_CONNECTION_STRING"
+]
+
+missing_vars = [var for var in REQUIRED_ENV_VARS if not os.environ.get(var)]
+if missing_vars:
+    raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+
+# FastAPI app
+app = FastAPI(
+    title="TTS Reader API",
+    description="API for text extraction and synthesis with Supabase integration",
+    version="2.1.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# Enhanced CORS configuration
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000", 
+    "https://localhost:3000"
+]
+
+# Get additional origins from environment if specified
+env_origins = os.environ.get("ALLOWED_ORIGINS", "")
+if env_origins:
+    ALLOWED_ORIGINS.extend(env_origins.split(","))
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
+
+# Security configuration
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/token")
+
+# AWS configuration with error handling
+try:
+    session = boto3.Session(
+        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+        region_name=os.environ.get("AWS_REGION", "us-east-1")
+    )
+    
+    s3 = session.client("s3")
+    polly = session.client("polly")
+    
+    # Test AWS credentials
+    s3.list_buckets()
+    polly.describe_voices(LanguageCode="en-US")
+    
+except (NoCredentialsError, ClientError) as e:
+    logger.error(f"AWS configuration error: {str(e)}")
+    raise ValueError("Invalid AWS credentials or configuration")
+
+BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "tts-neural-reader-data")
+
+# Stripe configuration
+stripe.api_key = os.environ.get("STRIPE_API_KEY")
+
+# Enhanced Pydantic models with better validation
+class UserCreate(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
+    password: str = Field(..., min_length=6, max_length=128)
+    email: EmailStr
+    first_name: str = Field(..., min_length=1, max_length=128)
+    last_name: str = Field(..., min_length=1, max_length=128)
+
+class UserLogin(BaseModel):
+    username: str = Field(..., min_length=1, max_length=50)
+    password: str = Field(..., min_length=1, max_length=128)
+
+class UserResponse(BaseModel):
+    user_id: str
+    username: str
+    email: str
+    first_name: Optional[str]
+    last_name: Optional[str]
+    remaining_chars: int
+    engine: str
+    voice_id: str
+    created_at: datetime
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    refresh_token: Optional[str] = None
+
+class ExtractRequest(BaseModel):
+    url: str = Field(..., pattern=r"^https?://.*")
+
+class SynthesizeRequest(BaseModel):
+    text_to_speech: str = Field(..., min_length=1, max_length=100000)
+    voice_id: str = Field(default="Joanna", max_length=50)
+    engine: str = Field(default="standard", pattern="^(standard|neural)$")
+
+class ExtractResponse(BaseModel):
+    text: str
+    characters_used: int
+    remaining_chars: int
+    extraction_method: str
+
+class SynthesizeResponse(BaseModel):
+    audio_url: str
+    speech_marks_url: str
+    characters_used: int
+    remaining_chars: int
+    duration_seconds: float
+
+class PreferencesUpdate(BaseModel):
+    engine: Optional[str] = Field(None, pattern="^(standard|neural)$")
+    voice_id: Optional[str] = Field(None, max_length=50)
+
+class StripeCheckoutRequest(BaseModel):
+    price_id: str = Field(default="price_1RcGYRQwS4m9kgMV6C1wAZcN")
+
+# Utility functions
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db)
+) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    
+    user = db.query(User).filter(User.username == username, User.is_active == True).first()
+    if user is None:
+        raise credentials_exception
+    
+    return user
+
+# S3 bucket management
+async def setup_bucket():
+    """Setup S3 bucket with proper configuration"""
+    try:
+        # Check if bucket exists
+        s3.head_bucket(Bucket=BUCKET_NAME)
+        logger.info(f"Bucket {BUCKET_NAME} already exists")
+    except ClientError as e:
+        error_code = int(e.response["Error"]["Code"])
+        if error_code == 404:
+            # Create bucket
+            try:
+                if os.environ.get("AWS_REGION") == "us-east-1":
+                    s3.create_bucket(Bucket=BUCKET_NAME)
+                else:
+                    s3.create_bucket(
+                        Bucket=BUCKET_NAME,
+                        CreateBucketConfiguration={
+                            "LocationConstraint": os.environ.get("AWS_REGION")
+                        }
+                    )
+                
+                # Configure bucket security
+                s3.put_public_access_block(
+                    Bucket=BUCKET_NAME,
+                    PublicAccessBlockConfiguration={
+                        "BlockPublicAcls": True,
+                        "IgnorePublicAcls": True,
+                        "BlockPublicPolicy": True,
+                        "RestrictPublicBuckets": True
+                    }
+                )
+                
+                # Enable versioning
+                s3.put_bucket_versioning(
+                    Bucket=BUCKET_NAME,
+                    VersioningConfiguration={"Status": "Enabled"}
+                )
+                
+                logger.info(f"Created and configured bucket {BUCKET_NAME}")
+            except ClientError as create_error:
+                logger.error(f"Failed to create bucket: {str(create_error)}")
+                raise
         else:
-            if len(word) > chunk_size:
-                chunks.append(word)
-            else:
-                current_chunk.append(word)
+            logger.error(f"Error accessing bucket: {str(e)}")
+            raise
+
+# Text processing utilities
+MAX_POLLY_CHARS = 3000  # Conservative limit for Polly
+
+def split_text_smart(text: str, max_length: int = MAX_POLLY_CHARS) -> list[str]:
+    """Split text intelligently at sentence boundaries"""
+    if len(text) <= max_length:
+        return [text]
+    
+    sentences = text.replace('\n', ' ').split('. ')
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        test_chunk = current_chunk + sentence + ". "
+        if len(test_chunk) > max_length and current_chunk:
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence + ". "
+        else:
+            current_chunk = test_chunk
+    
     if current_chunk:
-        chunks.append(' '.join(current_chunk))
+        chunks.append(current_chunk.strip())
+    
     return chunks
 
-@app.route('/api/register', methods=['POST'])
-def register() -> tuple[dict, int]:
-    """Register a new user."""
-    data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
-    email = data.get('email')
-    first_name = data.get('firstName')
-    last_name = data.get('lastName')
-    # print(f"{User.query.filter_by(username=username).first()=}")
-    if not username or not password:
-        return jsonify({'error': 'username and password are required'}), 400
-    if User.query.filter_by(username=username).first():
-        return jsonify({'error': 'User already exists'}), 400
-    user = User(user_id=uuid.uuid4(), username=username, email=email, first_name=first_name, last_name=last_name)
-    user.set_password(password)
+# Startup event
+@app.on_event("startup")
+async def startup_event():
+    """Initialize application on startup"""
+    logger.info("Starting TTS Reader API with Supabase...")
+    
+    # Setup S3 bucket
+    await setup_bucket()
+    
+    logger.info("Application startup complete with Supabase integration")
 
-    db.session.add(user)
-    db.session.commit()
-    logger.info(f"User {username} registered successfully")
-    return jsonify({'message': 'User registered successfully'}), 201
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Comprehensive health check endpoint"""
+    db_health = await db_health_check()
+    
+    return {
+        "status": "healthy" if db_health["database"] == "healthy" else "degraded",
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "2.1.0",
+        "database": db_health,
+        "aws_s3": "healthy",
+        "aws_polly": "healthy"
+    }
 
-@app.route('/api/login', methods=['POST'])
-def login() -> tuple[dict, int]:
-    """Authenticate a user and return access and refresh tokens."""
-    data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
-    if not username or not password:
-        return jsonify({'error': 'User ID and password are required'}), 400
-    user = User.query.filter_by(username=username).first()
-    if user and user.check_password(password):
-        access_token = create_access_token(identity=username)
-        refresh_token = create_refresh_token(identity=username)
-        log_user_data(username, 'login')
-        return jsonify({
-            'access_token': access_token,
-            'refresh_token': refresh_token
-        }), 200
-    return jsonify({'error': 'Invalid credentials'}), 401
+# Authentication endpoints
+@app.post("/api/register", response_model=UserResponse)
+async def register(request: Request, user_data: UserCreate, db: Session = Depends(get_db)):
+    """Register a new user with enhanced validation"""
+    logger.info(f"Registration attempt for username: {user_data.username}")
+    
+    # Check if username exists
+    existing_username = db.query(User).filter(User.username == user_data.username).first()
+    if existing_username:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Username '{user_data.username}' already exists"
+        )
+    
+    # Check if email exists
+    existing_email = db.query(User).filter(User.email == user_data.email).first()
+    if existing_email:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Email '{user_data.email}' already registered"
+        )
+    
+    try:
+        # Create new user
+        db_user = User(
+            username=user_data.username,
+            email=user_data.email,
+            first_name=user_data.first_name,
+            last_name=user_data.last_name
+        )
+        
+        # Set password using the model method
+        db_user.set_password(user_data.password)
+        
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        
+        logger.info(f"User {user_data.username} registered successfully")
+        
+        return UserResponse(
+            user_id=str(db_user.user_id),
+            username=db_user.username,
+            email=db_user.email,
+            first_name=db_user.first_name,
+            last_name=db_user.last_name,
+            remaining_chars=db_user.remaining_chars,
+            engine=db_user.engine,
+            voice_id=db_user.voice_id,
+            created_at=db_user.created_at
+        )
+    except Exception as e:
+        logger.error(f"Registration error for {user_data.username}: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred during registration"
+        )
 
-@app.route('/api/refresh', methods=['POST'])
-@jwt_required()
-def refresh() -> tuple[dict, int]:
-    """Refresh an access token using a valid refresh token."""
-    current_user = get_jwt_identity()
-    token_data = get_jwt()
-    if token_data.get('type') != 'refresh':
-        return jsonify({'error': 'Refresh token required'}), 401
-    new_access_token = create_access_token(identity=current_user)
-    logger.info(f"Refreshed access token for user {current_user}")
-    return jsonify({'access_token': new_access_token}), 200
+@app.post("/api/login", response_model=Token)
+async def login_json(request: Request, user_data: UserLogin, db: Session = Depends(get_db)):
+    """Authenticate user and return access token"""
+    logger.info(f"Login attempt for username: {user_data.username}")
+    
+    # Find user by username
+    db_user = db.query(User).filter(User.username == user_data.username).first()
+    
+    if not db_user:
+        logger.warning(f"Login failed - user not found: {user_data.username}")
+        raise HTTPException(
+            status_code=401,
+            detail=f"User '{user_data.username}' not found"
+        )
+    
+    if not db_user.check_password(user_data.password):
+        logger.warning(f"Login failed - incorrect password for user: {user_data.username}")
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect password"
+        )
+    
+    if not db_user.is_active:
+        logger.warning(f"Login failed - user account disabled: {user_data.username}")
+        raise HTTPException(
+            status_code=401,
+            detail="User account is disabled"
+        )
+    
+    # Update last login
+    db_user.update_last_login()
+    db.commit()
+    
+    # Create tokens
+    access_token = create_access_token(data={"sub": db_user.username})
+    refresh_token = create_access_token(
+        data={"sub": db_user.username, "refresh": True}, 
+        expires_delta=timedelta(days=7)
+    )
+    
+    logger.info(f"User {db_user.username} authenticated successfully")
+    
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer",
+        "refresh_token": refresh_token
+    }
 
-@app.route('/api/logout', methods=['POST'])
-@jwt_required()
-def logout() -> tuple[dict, int]:
-    """Handle user logout by logging the event (client clears tokens)."""
-    user_id = get_jwt_identity()
-    log_user_data(user_id, 'logout')
-    return jsonify({'message': 'Logged out successfully'}), 200
+@app.get("/api/user", response_model=UserResponse)
+async def get_user_info(current_user: User = Depends(get_current_user)):
+    """Get current user information"""
+    return UserResponse(
+        user_id=str(current_user.user_id),
+        username=current_user.username,
+        email=current_user.email,
+        first_name=current_user.first_name,
+        last_name=current_user.last_name,
+        remaining_chars=current_user.remaining_chars,
+        engine=current_user.engine,
+        voice_id=current_user.voice_id,
+        created_at=current_user.created_at
+    )
 
-@app.route("/api/create-checkout-session", methods=["POST"])
-@jwt_required()
-def create_checkout_session():
-    username = get_jwt_identity()
-    print(f"{username=}")
-    print(f"{os.environ.get('STRIPE_API_KEY')}")
+# Stripe integration endpoints
+@app.post("/api/create-checkout-session")
+async def create_checkout_session(
+    request: StripeCheckoutRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Create a Stripe checkout session for subscription"""
     try:
         checkout_session = stripe.checkout.Session.create(
             payment_method_types=["card"],
             line_items=[
                 {
-                    "price": "price_1RcGYRQwS4m9kgMV6C1wAZcN",
+                    "price": request.price_id,
                     "quantity": 1,
                 }
             ],
             mode="subscription",
             success_url="http://localhost:3000/success",
             cancel_url="http://localhost:3000/failed",
-            client_reference_id=str(username),
-            api_key=os.environ.get("STRIPE_API_KEY")
-            # metadata={"username": username}
+            client_reference_id=current_user.username,
         )
-        print(f"{checkout_session.url=}")
-        return jsonify({'url': checkout_session.url}), 200
+        
+        logger.info(f"Created checkout session for user {current_user.username}")
+        return {"url": checkout_session.url}
+        
     except Exception as e:
-        print(f"{e=}")
-        return str(e)
+        logger.error(f"Stripe checkout error for user {current_user.username}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create checkout session"
+        )
 
-@app.route('/api/stripe_webhook', methods=['POST'])
-def webhook():
-    print("webhook received")
-    payload = request.data
-    print(f"{payload=}")
+@app.post("/api/stripe_webhook")
+async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
+    """Handle Stripe webhook events"""
+    payload = await request.body()
     sig_header = request.headers.get("Stripe-Signature")
     
     try:
@@ -258,245 +469,372 @@ def webhook():
             payload, sig_header, os.environ.get("STRIPE_WEBHOOK_SECRET")
         )
     except ValueError:
-        print("Invalid payload")
-        return "Invalid payload", 400
+        logger.error("Invalid payload in Stripe webhook")
+        raise HTTPException(status_code=400, detail="Invalid payload")
     except stripe.error.SignatureVerificationError:
-        print("Invalid signature")
-        return "Invalid signature", 400
+        logger.error("Invalid signature in Stripe webhook")
+        raise HTTPException(status_code=400, detail="Invalid signature")
 
     # Handle the event
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        print(f"{session=}")
         username = session["client_reference_id"]
-        user = User.query.filter_by(username=username).first()
-        subscription_id = session["customer"]
-        user.stripe_subscription_id = subscription_id
-        db.session.commit()
+        user = db.query(User).filter(User.username == username).first()
+        
+        if user:
+            subscription_id = session["customer"]
+            user.stripe_subscription_id = subscription_id
+            db.commit()
+            logger.info(f"Updated subscription ID for user {username}")
 
     elif event["type"] == "customer.subscription.deleted":
-        session = event["data"]["object"]
-        print(f"{session=}")
-        username = session["metadata"]["username"]
         subscription = event["data"]["object"]
-        subscription_id = subscription["id"]
-        db.set_stripe_subscription_id(username, None)
+        # Find user by subscription ID and remove it
+        user = db.query(User).filter(User.stripe_subscription_id == subscription["id"]).first()
+        if user:
+            user.stripe_subscription_id = None
+            db.commit()
+            logger.info(f"Removed subscription ID for user {user.username}")
 
-    return "", 200
+    return {"status": "success"}
 
-
-@app.route('/api/synthesize', methods=['POST'])
-@jwt_required()
-def synthesize() -> tuple[dict, int]:
-    """Synthesize text to speech using Amazon Polly and return audio/speech marks URLs."""
-    user_id = get_jwt_identity()
-    data = request.get_json()
-    text_to_speech = data.get('text_to_speech', '')
-    voice_id = data.get('voice_id', 'Joey')
-    engine = data.get('engine', 'standard')
-
-    if engine not in ['standard', 'neural']:
-        return jsonify({'error': 'Invalid engine type. Use "standard" or "neural".'}), 400
-
-    if not text_to_speech.strip():
-        return jsonify({'error': 'No text to synthesize'}), 400
-
-    text_length = len(text_to_speech)
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-    if text_length > user.remaining_chars:
-        return jsonify({'message': 'User has exceeded their character limit'}), 403
-
+# Content extraction endpoint
+@app.post("/api/extract", response_model=ExtractResponse)
+async def extract_content_endpoint(
+    request: ExtractRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Extract text content from URL"""
     try:
-        chunks = split_text(text_to_speech, MAX_TEXT_LENGTH)
+        extracted_text, method = await extract_content(request.url)
+        
+        if not extracted_text:
+            raise HTTPException(
+                status_code=422,
+                detail="Could not extract content from the provided URL"
+            )
+        
+        text_length = len(extracted_text)
+        
+        if not current_user.deduct_characters(text_length):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Text length ({text_length}) exceeds remaining character limit ({current_user.remaining_chars})"
+            )
+        
+        # Commit the character deduction
+        db.commit()
+        
+        logger.info(f"Extracted {text_length} characters for user {current_user.username} using {method}")
+        
+        return ExtractResponse(
+            text=extracted_text,
+            characters_used=text_length,
+            remaining_chars=current_user.remaining_chars,
+            extraction_method=method
+        )
+        
+    except Exception as e:
+        logger.error(f"Extraction error for user {current_user.username}: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred during content extraction"
+        )
+
+# Text synthesis endpoint
+@app.post("/api/synthesize", response_model=SynthesizeResponse)
+async def synthesize_text(
+    request: SynthesizeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Synthesize text to speech using Amazon Polly"""
+    text_length = len(request.text_to_speech)
+    
+    if not current_user.deduct_characters(text_length):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Text length ({text_length}) exceeds remaining character limit ({current_user.remaining_chars})"
+        )
+    
+    try:
+        # Split text into chunks
+        chunks = split_text_smart(request.text_to_speech)
         audio_segments = []
         speech_marks_list = []
-        cumulative_time = 0
-
-        for chunk in chunks:
-            audio_response = polly.synthesize_speech(
-                Text=chunk,
-                OutputFormat='mp3',
-                VoiceId=voice_id,
-                Engine=engine
-            )
-            audio_stream = audio_response['AudioStream'].read()
-            audio_segment = AudioSegment.from_file(io.BytesIO(audio_stream), format='mp3')
-            audio_segments.append(audio_segment)
-
-            speech_marks_response = polly.synthesize_speech(
-                Text=chunk,
-                OutputFormat='json',
-                VoiceId=voice_id,
-                SpeechMarkTypes=['word'],
-                Engine=engine
-            )
-            speech_marks_text = speech_marks_response['AudioStream'].read().decode('utf-8')
-            chunk_marks = [json.loads(line) for line in speech_marks_text.splitlines() if line]
-            for mark in chunk_marks:
-                mark['time'] += cumulative_time
-            speech_marks_list.extend(chunk_marks)
-            cumulative_time += len(audio_segment)
-
-        combined_audio = AudioSegment.empty()
-        for segment in audio_segments:
-            combined_audio += segment
-
-        f = io.BytesIO()
-        combined_audio.export(f, format='mp3')
-        audio_bytes = f.getvalue()
-
-        audio_file_key = f'users/{user_id}/audio/speech.mp3'
-        s3.put_object(Bucket=bucket_name, Key=audio_file_key, Body=audio_bytes)
-        audio_url = generate_presigned_url(bucket_name, audio_file_key)
-
-        speech_marks_text = '\n'.join([json.dumps(mark) for mark in speech_marks_list])
-        speech_marks_file_key = f'users/{user_id}/speech_marks/speech_marks.json'
-        s3.put_object(Bucket=bucket_name, Key=speech_marks_file_key, Body=speech_marks_text)
-        speech_marks_url = generate_presigned_url(bucket_name, speech_marks_file_key)
-
-        charge = calculate_charge(text_length, engine)
-        user.remaining_chars -= text_length
-        db.session.commit()
-
-        log_user_data(user_id, 'synthesize', {
-            'text_length': text_length,
-            'remaining_chars': user.remaining_chars,
-            'charge': charge,
-            'engine': engine
-        })
-
-        return jsonify({'audio_url': audio_url, 'speech_marks_url': speech_marks_url}), 200
-
-    except Exception as e:
-        logger.error(f"Synthesis error for user {user_id}: {str(e)}", exc_info=True)
-        return jsonify({'error': f'Synthesis failed: {str(e)}'}), 500
-
-@app.route('/api/usage', methods=['GET'])
-@jwt_required()
-def get_usage() -> tuple[dict, int]:
-    """Retrieve the user's remaining character limit."""
-    username = get_jwt_identity()
-    user = User.query.filter_by(username=username).first()
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-    log_user_data(username, 'usage_check', {'remaining_chars': user.remaining_chars})
-    return jsonify({'remaining_chars': user.remaining_chars}), 200
-
-@app.route('/api/admin/set_free_chars', methods=['POST'])
-@jwt_required()
-def set_free_chars() -> tuple[dict, int]:
-    """Admin or self endpoint to set a user's free character limit."""
-    user_id = get_jwt_identity()
-    data = request.get_json()
-    target_user_id = data.get('target_user_id')
-    new_chars = data.get('remaining_chars', 100)
-    if not target_user_id:
-        return jsonify({'error': 'Target user ID is required'}), 400
-    user = User.query.get(user_id)
-    target_user = User.query.get(target_user_id)
-    if not user or not target_user:
-        return jsonify({'error': 'User not found'}), 404
-    if user.id != 'Petticoat' and user.id != target_user_id:
-        return jsonify({'error': 'Unauthorized'}), 403
-    target_user.remaining_chars = new_chars
-    db.session.commit()
-    log_user_data(user_id, 'admin_set_free_chars', {
-        'target_user_id': target_user_id,
-        'new_remaining_chars': new_chars
-    })
-    return jsonify({'message': f'Free characters for {target_user_id} set to {new_chars}'}), 200
-
-# New endpoint to get preferences
-@app.route('/api/preferences', methods=['GET', 'POST'])
-@jwt_required()
-def get_preferences():
-    """Retrieve the user's current engine and voice preferences."""
-    print(f"{request.method}")
-    username = get_jwt_identity()
-    user = User.query.filter_by(username=username).first()
-    print(f"{user=}")
-    if not user:
-        return jsonify({'error': 'User not found'}), 404
-    if request.method == "POST":
-        data = request.get_json()
-        engine = data.get('engine')
-        voice_id = data.get('voice_id')
+        cumulative_time = 0.0
         
-        if engine not in ['standard', 'neural']:
-            return jsonify({'error': 'Invalid engine type. Use "standard" or "neural".'}), 400
-        user.engine = engine
-        user.voice_id = voice_id
-        db.session.commit()
-        return jsonify({'message': 'Preferences updated successfully'}), 200
-    elif request.method == "GET":
-        preferences = {
-            'engine': user.engine,
-            'voice_id': user.voice_id
+        for chunk in chunks:
+            # Synthesize audio
+            audio_response = await asyncio.to_thread(
+                polly.synthesize_speech,
+                Text=chunk,
+                OutputFormat="mp3",
+                VoiceId=request.voice_id,
+                Engine=request.engine
+            )
+            
+            audio_stream = audio_response['AudioStream'].read()
+            audio_segment = AudioSegment.from_file(io.BytesIO(audio_stream), format="mp3")
+            audio_segments.append(audio_segment)
+            
+            # Generate speech marks
+            marks_response = await asyncio.to_thread(
+                polly.synthesize_speech,
+                Text=chunk,
+                OutputFormat="json",
+                VoiceId=request.voice_id,
+                Engine=request.engine,
+                SpeechMarkTypes=["word", "sentence"]
+            )
+            
+            marks_text = marks_response['AudioStream'].read().decode('utf-8')
+            chunk_marks = [json.loads(line) for line in marks_text.splitlines() if line.strip()]
+            
+            # Adjust timing for concatenated audio
+            for mark in chunk_marks:
+                mark['time'] += int(cumulative_time * 1000)
+            
+            speech_marks_list.extend(chunk_marks)
+            cumulative_time += len(audio_segment) / 1000.0
+        
+        # Combine audio segments
+        combined_audio = sum(audio_segments)
+        audio_buffer = io.BytesIO()
+        combined_audio.export(audio_buffer, format="mp3")
+        audio_bytes = audio_buffer.getvalue()
+        
+        # Upload to S3
+        timestamp = int(time.time())
+        audio_key = f"users/{current_user.user_id}/audio/{timestamp}.mp3"
+        marks_key = f"users/{current_user.user_id}/speech_marks/{timestamp}.json"
+        
+        # Upload audio file
+        await asyncio.to_thread(
+            s3.put_object,
+            Bucket=BUCKET_NAME,
+            Key=audio_key,
+            Body=audio_bytes,
+            ContentType="audio/mpeg"
+        )
+        
+        # Upload speech marks
+        marks_data = "\n".join([json.dumps(mark) for mark in speech_marks_list])
+        await asyncio.to_thread(
+            s3.put_object,
+            Bucket=BUCKET_NAME,
+            Key=marks_key,
+            Body=marks_data,
+            ContentType="application/json"
+        )
+        
+        # Generate presigned URLs
+        audio_url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": BUCKET_NAME, "Key": audio_key},
+            ExpiresIn=3600
+        )
+        
+        speech_marks_url = s3.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": BUCKET_NAME, "Key": marks_key},
+            ExpiresIn=3600
+        )
+        
+        # Commit the character deduction
+        db.commit()
+        
+        duration = len(combined_audio) / 1000.0
+        
+        logger.info(f"Synthesized {text_length} characters for user {current_user.username}")
+        
+        return SynthesizeResponse(
+            audio_url=audio_url,
+            speech_marks_url=speech_marks_url,
+            characters_used=text_length,
+            remaining_chars=current_user.remaining_chars,
+            duration_seconds=duration
+        )
+        
+    except Exception as e:
+        logger.error(f"Synthesis error for user {current_user.username}: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred during text synthesis"
+        )
+
+# Get available voices
+@app.get("/api/voices")
+async def get_voices(current_user: User = Depends(get_current_user)):
+    """Get available Polly voices grouped by engine"""
+    try:
+        response = await asyncio.to_thread(
+            polly.describe_voices,
+            LanguageCode="en-US"
+        )
+        
+        # Group voices by supported engines
+        standard_voices = []
+        neural_voices = []
+        
+        for voice in response["Voices"]:
+            voice_data = {
+                "id": voice["Id"],
+                "name": voice["Name"],
+                "gender": voice["Gender"],
+                "language": voice["LanguageName"]
+            }
+            
+            # Check which engines this voice supports
+            supported_engines = voice["SupportedEngines"]
+            
+            if "standard" in supported_engines:
+                standard_voices.append(voice_data)
+            
+            if "neural" in supported_engines:
+                neural_voices.append(voice_data)
+        
+        return {
+            "standard": standard_voices,
+            "neural": neural_voices,
+            "all": standard_voices + neural_voices  # For convenience
         }
-        return jsonify(preferences), 200
-
-# Need to test the new function that combines the get and post request before deleting this code
-# @app.route('/api/preferences', methods=['POST'])
-# @jwt_required()
-# def set_preferences():
-#     """Set the user's engine and voice preferences."""
-#     user_id = get_jwt_identity()
-    
-#     user = User.query.get(user_id)
-#     if not user:
-#         return jsonify({'error': 'User not found'}), 404
-    
-# New endpoint to get voices
-@app.route('/api/voices', methods=['GET'])
-def get_voices():
-    """Retrieve the list of voices for a given engine type."""
-    engine = request.args.get('engine', 'standard')
-    if engine not in ['standard', 'neural']:
-        return jsonify({'error': 'Invalid engine type. Use "standard" or "neural".'}), 400
-    try:
-        response = polly.describe_voices(Engine=engine)
-        voices = response['Voices']
-        return jsonify(voices), 200
+        
     except Exception as e:
-        logger.error(f"Failed to fetch voices: {str(e)}")
-        return jsonify({'error': f'Failed to fetch voices: {str(e)}'}), 500
+        logger.error(f"Error fetching voices: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not retrieve available voices"
+        )
 
-def log_user_data(user_id: str, event_type: str, additional_data: Optional[dict] = None) -> None:
-    """Log user activity to S3 bucket."""
-    log_key = f'logs/users/{user_id}/{event_type}_{int(time.time())}.json'
-    log_data = {
-        'user_id': user_id,
-        'event_type': event_type,
-        'timestamp': int(time.time()),
-        **(additional_data or {})
+# User preferences endpoints
+@app.get("/api/preferences")
+async def get_preferences(current_user: User = Depends(get_current_user)):
+    """Get user preferences"""
+    return {
+        "voice_id": current_user.voice_id,
+        "engine": current_user.engine,
+        "remaining_chars": current_user.remaining_chars,
+        "user_id": str(current_user.user_id),
+        "username": current_user.username
     }
+
+@app.post("/api/preferences")
+async def update_preferences(
+    preferences: PreferencesUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update user preferences"""
     try:
-        s3.put_object(Bucket=bucket_name, Key=log_key, Body=json.dumps(log_data))
-        logger.info(f"Logged {event_type} event for user {user_id}")
+        current_user.update_preferences(
+            engine=preferences.engine,
+            voice_id=preferences.voice_id
+        )
+        
+        db.commit()
+        logger.info(f"Updated preferences for user {current_user.username}")
+        
+        return {
+            "voice_id": current_user.voice_id,
+            "engine": current_user.engine,
+            "message": "Preferences updated successfully"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to log data for user {user_id}: {str(e)}")
+        logger.error(f"Error updating preferences for {current_user.username}: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while updating preferences"
+        )
 
-def calculate_charge(text_length: int, engine: str) -> float:
-    """Calculate charge based on text length and engine type."""
-    if text_length <= 100:
-        return 0.00
-    excess_chars = text_length - 100
-    if engine == 'standard':
-        charge_per_char = 0.000006
-    elif engine == 'neural':
-        charge_per_char = 0.000024
-    else:
-        raise ValueError("Invalid engine type")
-    total_charge = excess_chars * charge_per_char
-    if total_charge < 0.01:
-        total_charge = 0.01
-    return round(total_charge, 2)
+# Usage endpoint
+@app.get("/api/usage")
+async def get_usage(current_user: User = Depends(get_current_user)):
+    """Get user usage statistics"""
+    usage_stats = current_user.get_usage_stats()
+    return {
+        "user_id": usage_stats["user_id"],
+        "username": usage_stats["username"],
+        "remaining_chars": usage_stats["remaining_chars"],
+        "used_chars": usage_stats["used_chars"],
+        "total_chars": usage_stats["total_chars"],
+        "usage_percentage": usage_stats["usage_percentage"],
+        "engine": usage_stats["engine"],
+        "voice_id": usage_stats["voice_id"],
+        "last_login": usage_stats["last_login"],
+        "created_at": usage_stats["created_at"]
+    }
 
-if __name__ == '__main__':
-    with app.app_context():
-        db.drop_all()  # Drop existing tables to apply new schema
-        db.create_all()  # Create tables with updated schema
-    app.run(debug=True, host='0.0.0.0', port=5000)
-    
+# Admin endpoints (for debugging - remove in production)
+@app.post("/api/create-test-user")
+async def create_test_user(db: Session = Depends(get_db)):
+    """Create a test user for development"""
+    try:
+        # Check if test user already exists
+        existing_user = db.query(User).filter(User.username == "testuser").first()
+        if existing_user:
+            return {"message": "Test user already exists", "username": "testuser"}
+        
+        # Create test user
+        test_user = User(
+            username="testuser",
+            email="test@example.com",
+            first_name="Test",
+            last_name="User"
+        )
+        test_user.set_password("password123")
+        
+        db.add(test_user)
+        db.commit()
+        db.refresh(test_user)
+        
+        return {
+            "message": "Test user created successfully",
+            "username": "testuser",
+            "password": "password123",
+            "email": "test@example.com"
+        }
+    except Exception as e:
+        logger.error(f"Error creating test user: {str(e)}")
+        db.rollback()
+        return {"error": str(e)}
+
+@app.get("/api/admin/users")
+async def list_users(db: Session = Depends(get_db)):
+    """List all users (admin only - add proper authorization)"""
+    users = db.query(User).all()
+    return {
+        "total_users": len(users),
+        "users": [
+            {
+                "user_id": str(user.user_id),
+                "username": user.username,
+                "email": user.email,
+                "remaining_chars": user.remaining_chars,
+                "is_active": user.is_active,
+                "created_at": user.created_at
+            }
+            for user in users
+        ]
+    }
+
+@app.get("/api/admin/database/status")
+async def database_status():
+    """Get database status information"""
+    return await db_health_check()
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=5000,
+        reload=True,
+        workers=1  # Use 1 for development, increase for production
+    )
