@@ -1,4 +1,4 @@
-#!/Users/anthonystolp/Desktop/dev/tts-reader-aws-backend/tts_reader_env/bin/python
+#!/Users/anthonystolp/Desktop/dev/tts-reader-aws-backend/tts_reader_env/bin/python3.12
 
 import sys
 import json
