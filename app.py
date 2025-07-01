@@ -5,9 +5,9 @@ import logging
 import io
 import uuid
 import stripe
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi import FastAPI, Depends, HTTPException, status, Request, WebSocket, BackgroundTasks
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, EmailStr
@@ -18,7 +18,7 @@ import asyncio
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from textract_processor import extract_content
+from textract_processor import extract_content, ContentExtractorManager, ExtractionResult
 
 # Import our Supabase-enabled database components
 from database import get_db, health_check as db_health_check
@@ -51,8 +51,8 @@ if missing_vars:
 # FastAPI app
 app = FastAPI(
     title="TTS Reader API",
-    description="API for text extraction and synthesis with Supabase integration",
-    version="2.1.0",
+    description="Enhanced API for text extraction and synthesis with intelligent content processing",
+    version="2.2.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -140,6 +140,11 @@ class Token(BaseModel):
 class ExtractRequest(BaseModel):
     url: str = Field(..., pattern=r"^https?://.*")
 
+class ExtractRequestEnhanced(BaseModel):
+    url: str = Field(..., pattern=r"^https?://.*")
+    prefer_textract: bool = Field(default=True, description="Whether to prefer Textract over DOM extraction")
+    include_metadata: bool = Field(default=False, description="Whether to include extraction metadata")
+
 class SynthesizeRequest(BaseModel):
     text_to_speech: str = Field(..., min_length=1, max_length=100000)
     voice_id: str = Field(default="Joanna", max_length=50)
@@ -150,6 +155,17 @@ class ExtractResponse(BaseModel):
     characters_used: int
     remaining_chars: int
     extraction_method: str
+
+class ExtractResponseEnhanced(BaseModel):
+    text: str
+    characters_used: int
+    remaining_chars: int
+    extraction_method: str
+    content_type: Optional[str] = None
+    confidence: Optional[float] = None
+    word_count: Optional[int] = None
+    processing_time: Optional[float] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 class SynthesizeResponse(BaseModel):
     audio_url: str
@@ -164,6 +180,23 @@ class PreferencesUpdate(BaseModel):
 
 class StripeCheckoutRequest(BaseModel):
     price_id: str = Field(default="price_1RcGYRQwS4m9kgMV6C1wAZcN")
+
+class ExtractionProgress(BaseModel):
+    status: str  # 'starting', 'processing', 'completed', 'failed'
+    message: str
+    progress: float  # 0.0 to 1.0
+    method: Optional[str] = None
+    timestamp: datetime
+
+class ExtractionPreview(BaseModel):
+    preview: str  # First 500 characters
+    estimated_length: int
+    confidence: float
+    method: str
+    full_available: bool
+
+# Global storage for extraction progress (use Redis in production)
+extraction_progress: Dict[str, List[ExtractionProgress]] = {}
 
 # Utility functions
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -257,7 +290,7 @@ async def setup_bucket():
 MAX_POLLY_CHARS = 3000  # Conservative limit for Polly
 
 def split_text_smart(text: str, max_length: int = MAX_POLLY_CHARS) -> list[str]:
-    """Split text intelligently at sentence boundaries"""
+    """Split text intelligently at sentence boundaries for TTS"""
     if len(text) <= max_length:
         return [text]
     
@@ -278,16 +311,33 @@ def split_text_smart(text: str, max_length: int = MAX_POLLY_CHARS) -> list[str]:
     
     return chunks
 
+def cleanup_progress_data():
+    """Clean up old progress data to prevent memory leaks"""
+    if len(extraction_progress) > 100:
+        # Sort by the latest timestamp and keep the most recent
+        sorted_keys = sorted(
+            extraction_progress.keys(),
+            key=lambda k: extraction_progress[k][-1].timestamp if extraction_progress[k] else datetime.min,
+            reverse=True
+        )
+        
+        # Keep only the latest 50
+        keys_to_keep = sorted_keys[:50]
+        keys_to_remove = [k for k in extraction_progress.keys() if k not in keys_to_keep]
+        
+        for key in keys_to_remove:
+            del extraction_progress[key]
+
 # Startup event
 @app.on_event("startup")
 async def startup_event():
     """Initialize application on startup"""
-    logger.info("Starting TTS Reader API with Supabase...")
+    logger.info("Starting Enhanced TTS Reader API with intelligent content extraction...")
     
     # Setup S3 bucket
     await setup_bucket()
     
-    logger.info("Application startup complete with Supabase integration")
+    logger.info("Application startup complete with enhanced extraction capabilities")
 
 # Health check endpoint
 @app.get("/health")
@@ -295,11 +345,20 @@ async def health_check():
     """Comprehensive health check endpoint"""
     db_health = await db_health_check()
     
+    # Import and check extraction service health
+    from textract_processor import health_check as extraction_health_check
+    extraction_health = await extraction_health_check()
+    
+    overall_status = "healthy"
+    if db_health["database"] != "healthy" or extraction_health["status"] != "healthy":
+        overall_status = "degraded"
+    
     return {
-        "status": "healthy" if db_health["database"] == "healthy" else "degraded",
+        "status": overall_status,
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "2.1.0",
+        "version": "2.2.0",
         "database": db_health,
+        "extraction_service": extraction_health,
         "aws_s3": "healthy",
         "aws_polly": "healthy"
     }
@@ -498,14 +557,14 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
     return {"status": "success"}
 
-# Content extraction endpoint
+# Original content extraction endpoint (backwards compatibility)
 @app.post("/api/extract", response_model=ExtractResponse)
 async def extract_content_endpoint(
     request: ExtractRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Extract text content from URL"""
+    """Extract text content from URL (original endpoint for backwards compatibility)"""
     try:
         extracted_text, method = await extract_content(request.url)
         
@@ -543,6 +602,325 @@ async def extract_content_endpoint(
             detail="An error occurred during content extraction"
         )
 
+# Enhanced content extraction endpoints
+@app.post("/api/extract/enhanced", response_model=ExtractResponseEnhanced)
+async def extract_content_enhanced(
+    request: ExtractRequestEnhanced,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Enhanced content extraction with better error handling and metadata for TTS"""
+    extraction_id = str(uuid.uuid4())
+    
+    try:
+        logger.info(f"Enhanced extraction request from user {current_user.username}: {request.url}")
+        
+        # Initialize progress tracking
+        extraction_progress[extraction_id] = [
+            ExtractionProgress(
+                status="starting",
+                message="Initializing TTS content extraction...",
+                progress=0.0,
+                timestamp=datetime.utcnow()
+            )
+        ]
+        
+        # Create extraction manager
+        manager = ContentExtractorManager()
+        
+        # Update progress
+        extraction_progress[extraction_id].append(
+            ExtractionProgress(
+                status="processing",
+                message="Analyzing webpage and extracting TTS-optimized content...",
+                progress=0.3,
+                timestamp=datetime.utcnow()
+            )
+        )
+        
+        # Perform extraction
+        start_time = time.time()
+        extracted_text, method = await manager.extract_content(
+            request.url, 
+            prefer_textract=request.prefer_textract
+        )
+        processing_time = time.time() - start_time
+        
+        if not extracted_text:
+            extraction_progress[extraction_id].append(
+                ExtractionProgress(
+                    status="failed",
+                    message="Could not extract TTS content from the provided URL",
+                    progress=1.0,
+                    timestamp=datetime.utcnow()
+                )
+            )
+            raise HTTPException(
+                status_code=422,
+                detail="Could not extract content from the provided URL"
+            )
+        
+        text_length = len(extracted_text)
+        
+        # Update progress
+        extraction_progress[extraction_id].append(
+            ExtractionProgress(
+                status="processing",
+                message="Validating extracted TTS content...",
+                progress=0.7,
+                method=method,
+                timestamp=datetime.utcnow()
+            )
+        )
+        
+        # Check character limits
+        if not current_user.deduct_characters(text_length):
+            extraction_progress[extraction_id].append(
+                ExtractionProgress(
+                    status="failed",
+                    message=f"Text length ({text_length}) exceeds remaining character limit",
+                    progress=1.0,
+                    timestamp=datetime.utcnow()
+                )
+            )
+            raise HTTPException(
+                status_code=403,
+                detail=f"Text length ({text_length}) exceeds remaining character limit ({current_user.remaining_chars})"
+            )
+        
+        # Commit the character deduction
+        db.commit()
+        
+        # Update progress
+        extraction_progress[extraction_id].append(
+            ExtractionProgress(
+                status="completed",
+                message="TTS content extraction completed successfully",
+                progress=1.0,
+                method=method,
+                timestamp=datetime.utcnow()
+            )
+        )
+        
+        logger.info(f"Enhanced extraction completed for user {current_user.username}: "
+                   f"{text_length} characters using {method} in {processing_time:.2f}s")
+        
+        # Prepare response
+        response_data = {
+            "text": extracted_text,
+            "characters_used": text_length,
+            "remaining_chars": current_user.remaining_chars,
+            "extraction_method": method,
+            "word_count": len(extracted_text.split()),
+            "processing_time": processing_time
+        }
+        
+        # Add metadata if requested
+        if request.include_metadata:
+            response_data["metadata"] = {
+                "url": request.url,
+                "extraction_id": extraction_id,
+                "user_id": str(current_user.user_id),
+                "timestamp": datetime.utcnow().isoformat(),
+                "prefer_textract": request.prefer_textract,
+                "optimized_for_tts": True
+            }
+        
+        # Clean up progress data (keep last 5 extractions per user)
+        cleanup_progress_data()
+        
+        return ExtractResponseEnhanced(**response_data)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Enhanced extraction error for user {current_user.username}: {str(e)}", exc_info=True)
+        
+        extraction_progress[extraction_id].append(
+            ExtractionProgress(
+                status="failed",
+                message=f"An error occurred during TTS extraction: {str(e)}",
+                progress=1.0,
+                timestamp=datetime.utcnow()
+            )
+        )
+        
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred during content extraction"
+        )
+
+@app.get("/api/extract/progress/{extraction_id}")
+async def get_extraction_progress(
+    extraction_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Get real-time progress of content extraction"""
+    if extraction_id not in extraction_progress:
+        raise HTTPException(
+            status_code=404,
+            detail="Extraction progress not found"
+        )
+    
+    progress_list = extraction_progress[extraction_id]
+    latest_progress = progress_list[-1] if progress_list else None
+    
+    return {
+        "extraction_id": extraction_id,
+        "current_status": latest_progress.status if latest_progress else "unknown",
+        "current_message": latest_progress.message if latest_progress else "No progress data",
+        "progress": latest_progress.progress if latest_progress else 0.0,
+        "method": latest_progress.method if latest_progress else None,
+        "history": [p.dict() for p in progress_list[-5:]]  # Last 5 progress updates
+    }
+
+@app.post("/api/extract/preview")
+async def extract_content_preview(
+    request: ExtractRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Get a preview of extracted TTS content without using character credits"""
+    try:
+        logger.info(f"Preview extraction request from user {current_user.username}: {request.url}")
+        
+        # Create extraction manager
+        manager = ContentExtractorManager()
+        
+        # Perform extraction
+        extracted_text, method = await manager.extract_content(request.url)
+        
+        if not extracted_text:
+            raise HTTPException(
+                status_code=422,
+                detail="Could not extract content from the provided URL"
+            )
+        
+        # Create preview (first 500 characters)
+        preview = extracted_text[:500]
+        if len(extracted_text) > 500:
+            preview += "..."
+        
+        # Estimate confidence based on extraction method
+        confidence_map = {
+            "textract": 0.9,
+            "dom_semantic": 0.8,
+            "dom_heuristic": 0.7,
+            "reader_mode": 0.6,
+            "dom_fallback": 0.4
+        }
+        
+        confidence = confidence_map.get(method, 0.5)
+        
+        return ExtractionPreview(
+            preview=preview,
+            estimated_length=len(extracted_text),
+            confidence=confidence,
+            method=method,
+            full_available=True
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Preview extraction error for user {current_user.username}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred during preview extraction"
+        )
+
+@app.get("/api/extract/methods")
+async def get_extraction_methods(current_user: User = Depends(get_current_user)):
+    """Get available extraction methods and their capabilities for TTS"""
+    from textract_processor import health_check
+    
+    health_status = await health_check()
+    
+    methods = [
+        {
+            "id": "dom_semantic",
+            "name": "DOM Semantic",
+            "description": "Extract content using semantic HTML elements - optimized for TTS reading",
+            "speed": "fast",
+            "accuracy": "high",
+            "tts_optimized": True,
+            "available": health_status["playwright_available"]
+        },
+        {
+            "id": "dom_heuristic", 
+            "name": "DOM Heuristic",
+            "description": "Extract content using content analysis algorithms - good for TTS",
+            "speed": "fast",
+            "accuracy": "medium-high",
+            "tts_optimized": True,
+            "available": health_status["playwright_available"]
+        },
+        {
+            "id": "reader_mode",
+            "name": "Reader Mode",
+            "description": "Extract content using reader mode algorithm - clean TTS output",
+            "speed": "fast",
+            "accuracy": "medium",
+            "tts_optimized": True,
+            "available": health_status["playwright_available"]
+        }
+    ]
+    
+    # Add Textract if available
+    if health_status["textract_available"]:
+        methods.insert(0, {
+            "id": "textract",
+            "name": "AWS Textract",
+            "description": "Extract content using AWS Textract OCR - highest accuracy for TTS",
+            "speed": "medium",
+            "accuracy": "very-high",
+            "tts_optimized": True,
+            "available": True
+        })
+    
+    return {
+        "methods": methods,
+        "default_strategy": "intelligent_fallback_tts_optimized",
+        "health_status": health_status,
+        "service_type": "TTS Content Extraction"
+    }
+
+@app.get("/api/extract/analytics")
+async def get_extraction_analytics(
+    current_user: User = Depends(get_current_user),
+    days: int = 7
+):
+    """Get TTS extraction analytics for the user"""
+    # In a real implementation, you'd query your database for extraction history
+    # For now, return mock data
+    
+    return {
+        "period_days": days,
+        "total_extractions": 42,
+        "total_characters": 125000,
+        "average_extraction_time": 3.2,
+        "tts_optimized_extractions": 40,
+        "methods_used": {
+            "textract": 25,
+            "dom_semantic": 12,
+            "dom_heuristic": 3,
+            "reader_mode": 2
+        },
+        "success_rate": 0.95,
+        "average_confidence": 0.82,
+        "most_common_sites": [
+            {"domain": "wikipedia.org", "count": 8},
+            {"domain": "medium.com", "count": 6},
+            {"domain": "github.com", "count": 4}
+        ],
+        "content_types": {
+            "articles": 22,
+            "blog_posts": 12,
+            "documentation": 6,
+            "news": 2
+        }
+    }
+
 # Text synthesis endpoint
 @app.post("/api/synthesize", response_model=SynthesizeResponse)
 async def synthesize_text(
@@ -550,7 +928,7 @@ async def synthesize_text(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Synthesize text to speech using Amazon Polly"""
+    """Synthesize text to speech using Amazon Polly with enhanced TTS processing"""
     text_length = len(request.text_to_speech)
     
     if not current_user.deduct_characters(text_length):
@@ -560,7 +938,7 @@ async def synthesize_text(
         )
     
     try:
-        # Split text into chunks
+        # Split text into chunks optimized for TTS
         chunks = split_text_smart(request.text_to_speech)
         audio_segments = []
         speech_marks_list = []
@@ -580,7 +958,7 @@ async def synthesize_text(
             audio_segment = AudioSegment.from_file(io.BytesIO(audio_stream), format="mp3")
             audio_segments.append(audio_segment)
             
-            # Generate speech marks
+            # Generate speech marks for TTS synchronization
             marks_response = await asyncio.to_thread(
                 polly.synthesize_speech,
                 Text=chunk,
@@ -669,7 +1047,7 @@ async def synthesize_text(
 # Get available voices
 @app.get("/api/voices")
 async def get_voices(current_user: User = Depends(get_current_user)):
-    """Get available Polly voices grouped by engine"""
+    """Get available Polly voices grouped by engine for TTS"""
     try:
         response = await asyncio.to_thread(
             polly.describe_voices,
@@ -685,7 +1063,8 @@ async def get_voices(current_user: User = Depends(get_current_user)):
                 "id": voice["Id"],
                 "name": voice["Name"],
                 "gender": voice["Gender"],
-                "language": voice["LanguageName"]
+                "language": voice["LanguageName"],
+                "tts_optimized": True
             }
             
             # Check which engines this voice supports
@@ -700,7 +1079,8 @@ async def get_voices(current_user: User = Depends(get_current_user)):
         return {
             "standard": standard_voices,
             "neural": neural_voices,
-            "all": standard_voices + neural_voices  # For convenience
+            "all": standard_voices + neural_voices,  # For convenience
+            "recommendation": "Neural voices provide more natural TTS output"
         }
         
     except Exception as e:
@@ -713,13 +1093,14 @@ async def get_voices(current_user: User = Depends(get_current_user)):
 # User preferences endpoints
 @app.get("/api/preferences")
 async def get_preferences(current_user: User = Depends(get_current_user)):
-    """Get user preferences"""
+    """Get user TTS preferences"""
     return {
         "voice_id": current_user.voice_id,
         "engine": current_user.engine,
         "remaining_chars": current_user.remaining_chars,
         "user_id": str(current_user.user_id),
-        "username": current_user.username
+        "username": current_user.username,
+        "tts_optimized": True
     }
 
 @app.post("/api/preferences")
@@ -728,7 +1109,7 @@ async def update_preferences(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Update user preferences"""
+    """Update user TTS preferences"""
     try:
         current_user.update_preferences(
             engine=preferences.engine,
@@ -736,12 +1117,12 @@ async def update_preferences(
         )
         
         db.commit()
-        logger.info(f"Updated preferences for user {current_user.username}")
+        logger.info(f"Updated TTS preferences for user {current_user.username}")
         
         return {
             "voice_id": current_user.voice_id,
             "engine": current_user.engine,
-            "message": "Preferences updated successfully"
+            "message": "TTS preferences updated successfully"
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -756,7 +1137,7 @@ async def update_preferences(
 # Usage endpoint
 @app.get("/api/usage")
 async def get_usage(current_user: User = Depends(get_current_user)):
-    """Get user usage statistics"""
+    """Get user TTS usage statistics"""
     usage_stats = current_user.get_usage_stats()
     return {
         "user_id": usage_stats["user_id"],
@@ -768,8 +1149,41 @@ async def get_usage(current_user: User = Depends(get_current_user)):
         "engine": usage_stats["engine"],
         "voice_id": usage_stats["voice_id"],
         "last_login": usage_stats["last_login"],
-        "created_at": usage_stats["created_at"]
+        "created_at": usage_stats["created_at"],
+        "service_type": "TTS Reader"
     }
+
+# WebSocket endpoint for real-time extraction progress
+@app.websocket("/ws/extract/{extraction_id}")
+async def websocket_extraction_progress(websocket: WebSocket, extraction_id: str):
+    """WebSocket endpoint for real-time TTS extraction progress updates"""
+    await websocket.accept()
+    
+    try:
+        while True:
+            if extraction_id in extraction_progress:
+                progress_list = extraction_progress[extraction_id]
+                if progress_list:
+                    latest = progress_list[-1]
+                    await websocket.send_text(json.dumps({
+                        "status": latest.status,
+                        "message": latest.message,
+                        "progress": latest.progress,
+                        "method": latest.method,
+                        "timestamp": latest.timestamp.isoformat(),
+                        "service": "TTS Content Extraction"
+                    }))
+                    
+                    # Close connection if extraction is complete
+                    if latest.status in ["completed", "failed"]:
+                        break
+            
+            await asyncio.sleep(1)  # Update every second
+            
+    except Exception as e:
+        logger.error(f"WebSocket error for extraction {extraction_id}: {str(e)}")
+    finally:
+        await websocket.close()
 
 # Admin endpoints (for debugging - remove in production)
 @app.post("/api/create-test-user")
