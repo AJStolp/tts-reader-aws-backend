@@ -5,3 +5,31 @@ __pycache__tts_reader_env/
 __pycache__/
 *.pyc
 .env
+
+
+# Create/update .gitignore
+cat >> .gitignore << EOF
+# Virtual Environment
+tts_reader_env/
+venv/
+env/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+EOF
