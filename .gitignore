@@ -1,7 +1,46 @@
-.env*
-.python-version
-.venv
-__pycache__tts_reader_env/
+# Virtual Environment
+tts_reader_env/
+venv/
+env/
+.venv/
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+
+# Environment variables
 .env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Database
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Pytest
+.pytest_cache/
+.coverage
+
+# MyPy
+.mypy_cache/
+
+# Node (if you have any frontend assets)
+node_modules/
