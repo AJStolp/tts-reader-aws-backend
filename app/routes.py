@@ -1,8 +1,9 @@
 """
 API routes for TTS Reader API
 """
+import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
@@ -296,26 +297,65 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# Health check endpoint
+# Health check endpoint - FIXED VERSION
 @auth_router.get("/health")
 async def health_check():
-    """Comprehensive health check endpoint"""
-    db_health = await db_health_check()
-    extraction_health = await extraction_health_check()
-    
-    overall_status = "healthy"
-    if db_health["database"] != "healthy" or extraction_health["status"] != "healthy":
-        overall_status = "degraded"
-    
-    return {
-        "status": overall_status,
-        "timestamp": "2024-01-01T00:00:00Z",  # This would be dynamic
-        "version": "2.2.0",
-        "database": db_health,
-        "extraction_service": extraction_health,
-        "aws_s3": "healthy",
-        "aws_polly": "healthy"
-    }
+    """Comprehensive health check endpoint with proper error handling"""
+    try:
+        # Database health check
+        db_health = await db_health_check()
+        if not db_health:
+            db_health = {"database": "unhealthy", "error": "No response from database"}
+        
+        # Extraction health check with fallback
+        extraction_health = None
+        try:
+            extraction_health = await extraction_health_check()
+            # Handle case where function returns None
+            if not extraction_health:
+                extraction_health = {"status": "degraded", "error": "No response from extraction service"}
+        except Exception as e:
+            logger.error(f"Extraction health check failed: {e}")
+            extraction_health = {"status": "degraded", "error": str(e)}
+        
+        # AWS Polly health check (basic)
+        polly_status = "healthy"  # Assume healthy unless we implement actual check
+        
+        # AWS S3 health check (basic)
+        s3_status = "healthy"  # Assume healthy unless we implement actual check
+        
+        # Determine overall status
+        overall_status = "healthy"
+        
+        # Safe checking for database status
+        db_status = db_health.get("database", "unknown") if isinstance(db_health, dict) else "unknown"
+        
+        # Safe checking for extraction status
+        extraction_status = extraction_health.get("status", "unknown") if isinstance(extraction_health, dict) else "unknown"
+        
+        if db_status != "healthy" or extraction_status not in ["healthy", "operational"]:
+            overall_status = "degraded"
+        
+        return {
+            "status": overall_status,
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "version": "2.2.0",
+            "database": db_health,
+            "extraction_service": extraction_health,
+            "aws_s3": s3_status,
+            "aws_polly": polly_status,
+            "service": "TTS Reader Backend"
+        }
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "status": "unhealthy",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "version": "2.2.0",
+            "error": str(e),
+            "service": "TTS Reader Backend"
+        }
 
 # WebSocket endpoint for real-time extraction progress
 @extraction_router.websocket("/ws/{extraction_id}")

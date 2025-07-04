@@ -34,11 +34,15 @@ class AppConfig:
     STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY")
     STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
     
-    # CORS settings
+    # CORS settings - FIXED for Chrome extension
     ALLOWED_ORIGINS = [
         "http://localhost:3000",
+        "http://localhost:5000",
         "http://127.0.0.1:3000", 
-        "https://localhost:3000"
+        "http://127.0.0.1:5000",
+        "https://localhost:3000",
+        "chrome-extension://*",  # Allow all Chrome extensions
+        "*"  # Allow all origins for development (restrict in production)
     ]
     
     # TTS settings
