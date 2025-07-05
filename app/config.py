@@ -1,83 +1,477 @@
 """
-Configuration and settings for TTS Reader API
+Configuration for TTS Reader API - Enhanced with Enterprise Security
 """
 import os
-from typing import List
-from dotenv import load_dotenv
+from typing import List, Optional
+from pydantic_settings import BaseSettings
 
-# Load environment variables
-load_dotenv()
-
-class AppConfig:
-    """Application configuration settings"""
+class EnterpriseConfig(BaseSettings):
+    """Enterprise-grade configuration with security settings"""
     
-    # Basic app info
-    TITLE = "TTS Reader API"
-    DESCRIPTION = "Enhanced API for text extraction and synthesis with intelligent content processing"
-    VERSION = "2.2.0"
+    # Application Settings
+    TITLE: str = "TTS DeepSight API - Enterprise Edition"
+    DESCRIPTION: str = "Enterprise-grade Text-to-Speech with advanced content extraction, highlighting, and comprehensive security"
+    VERSION: str = "2.3.0-enterprise"
     
-    # Security settings
-    JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
-    ALGORITHM = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+    # Server Configuration
+    HOST: str = "0.0.0.0"
+    PORT: int = 5000
+    WORKERS: int = 4
+    RELOAD: bool = False
     
-    # AWS settings
-    AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID")
-    AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
-    AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-    S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "tts-neural-reader-data")
+    # Database Configuration - Supporting both old and new formats
+    DATABASE_URL: str = "sqlite:///./database.db"
+    DATABASE_CONNECTION_STRING: Optional[str] = None  # Legacy support
+    SUPABASE_URL: Optional[str] = None
+    SUPABASE_KEY: Optional[str] = None
     
-    # Database
-    DATABASE_CONNECTION_STRING = os.environ.get("DATABASE_CONNECTION_STRING")
+    # AWS Configuration
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_REGION: str = "us-east-1"
+    S3_BUCKET_NAME: str = "tts-neural-reader-data"
     
-    # Stripe
-    STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY")
-    STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
+    # Authentication & Security - Supporting both old and new formats
+    SECRET_KEY: str = "your-super-secret-key-change-in-production"
+    JWT_SECRET_KEY: Optional[str] = None  # Legacy support
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     
-    # CORS settings - FIXED for Chrome extension
-    ALLOWED_ORIGINS = [
+    # CORS Configuration
+    ALLOWED_ORIGINS: List[str] = [
         "http://localhost:3000",
-        "http://localhost:5000",
-        "http://127.0.0.1:3000", 
-        "http://127.0.0.1:5000",
-        "https://localhost:3000",
-        "chrome-extension://*",  # Allow all Chrome extensions
-        "*"  # Allow all origins for development (restrict in production)
+        "http://localhost:3001", 
+        "https://yourdomain.com",
+        "https://app.yourdomain.com"
     ]
     
-    # TTS settings
-    MAX_POLLY_CHARS = 3000  # Conservative limit for Polly
+    # TTS Configuration
+    MAX_POLLY_CHARS: int = 3000
+    DEFAULT_VOICE_ID: str = "Joanna"
+    DEFAULT_ENGINE: str = "neural"
     
-    # Server settings
-    HOST = os.environ.get("HOST", "0.0.0.0")
-    PORT = int(os.environ.get("PORT", "5000"))
-    WORKERS = int(os.environ.get("WORKERS", "1"))
-    RELOAD = os.environ.get("RELOAD", "false").lower() == "true"
+    # Stripe Configuration
+    STRIPE_API_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
     
-    def __post_init__(self):
-        # Add additional origins from environment
-        env_origins = os.environ.get("ALLOWED_ORIGINS", "")
-        if env_origins:
-            self.ALLOWED_ORIGINS.extend(env_origins.split(","))
+    # Content Extraction Configuration
+    MAX_EXTRACTION_RETRIES: int = 3
+    EXTRACTION_TIMEOUT: int = 30
+    USER_AGENT: str = "TTS-DeepSight-Bot/2.3.0"
     
-    @classmethod
-    def validate_required_env_vars(cls) -> List[str]:
-        """Validate that all required environment variables are set"""
-        required_vars = [
-            "JWT_SECRET_KEY",
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_REGION",
-            "DATABASE_CONNECTION_STRING"
-        ]
+    # Enterprise Security Configuration
+    ENTERPRISE_SECURITY_ENABLED: bool = True
+    SECURITY_AUDIT_LOG_LEVEL: str = "INFO"
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_REQUESTS_PER_HOUR: int = 100
+    RATE_LIMIT_REQUESTS_PER_MINUTE: int = 10
+    CONTENT_SECURITY_POLICY_ENABLED: bool = True
+    AUDIT_LOGGING_ENABLED: bool = True
+    ENCRYPTION_ENABLED: bool = True
+    
+    # Security Thresholds
+    MAX_CONTENT_LENGTH: int = 500000  # 500KB
+    MAX_URL_LENGTH: int = 2048
+    MAX_USER_AGENT_LENGTH: int = 1000
+    SUSPICIOUS_SCORE_THRESHOLD: int = 50
+    MAX_EXTRACTION_PROCESSING_TIME: int = 300  # 5 minutes
+    MAX_SPEECH_MARKS_SIZE: int = 10000000  # 10MB
+    
+    # Session Management
+    SESSION_TIMEOUT_MINUTES: int = 60
+    SESSION_CLEANUP_INTERVAL_MINUTES: int = 15
+    MAX_CONCURRENT_SESSIONS_PER_USER: int = 5
+    
+    # Audit & Compliance
+    AUDIT_LOG_RETENTION_DAYS: int = 365
+    AUDIT_LOG_MAX_SIZE_MB: int = 1000
+    COMPLIANCE_MODE: str = "SOC2"  # SOC2, ISO27001, NIST
+    
+    # Password Policy
+    PASSWORD_MIN_LENGTH: int = 12
+    PASSWORD_REQUIRE_UPPERCASE: bool = True
+    PASSWORD_REQUIRE_LOWERCASE: bool = True
+    PASSWORD_REQUIRE_NUMBERS: bool = True
+    PASSWORD_REQUIRE_SPECIAL_CHARS: bool = True
+    PASSWORD_MAX_AGE_DAYS: int = 90
+    
+    # API Security
+    API_KEY_ENABLED: bool = True
+    API_KEY_LENGTH: int = 64
+    API_RATE_LIMIT_PER_KEY: int = 1000
+    
+    # Content Validation
+    CONTENT_VALIDATION_ENABLED: bool = True
+    XSS_PROTECTION_ENABLED: bool = True
+    SQL_INJECTION_PROTECTION_ENABLED: bool = True
+    MALWARE_SCANNING_ENABLED: bool = False  # Requires external service
+    
+    # TLS/SSL Configuration
+    TLS_VERSION_MIN: str = "1.2"
+    HSTS_MAX_AGE_SECONDS: int = 31536000  # 1 year
+    HSTS_INCLUDE_SUBDOMAINS: bool = True
+    
+    # Monitoring & Alerting
+    MONITORING_ENABLED: bool = True
+    ALERT_ON_SECURITY_VIOLATIONS: bool = True
+    ALERT_ON_PERFORMANCE_ISSUES: bool = True
+    PERFORMANCE_THRESHOLD_MS: int = 5000
+    
+    # Data Protection
+    DATA_ENCRYPTION_AT_REST: bool = True
+    DATA_ENCRYPTION_IN_TRANSIT: bool = True
+    PII_ANONYMIZATION_ENABLED: bool = True
+    DATA_RETENTION_DAYS: int = 90
+    
+    # Backup & Recovery
+    BACKUP_ENABLED: bool = True
+    BACKUP_INTERVAL_HOURS: int = 24
+    BACKUP_RETENTION_DAYS: int = 30
+    
+    # Feature Flags
+    TEXTRACT_EXTRACTION_ENABLED: bool = True
+    DOM_EXTRACTION_ENABLED: bool = True
+    ADVANCED_HIGHLIGHTING_ENABLED: bool = True
+    SPEECH_MARKS_ENABLED: bool = True
+    REAL_TIME_PROGRESS_ENABLED: bool = True
+    QUALITY_ANALYSIS_ENABLED: bool = True
+    CONTENT_CACHING_ENABLED: bool = True
+    
+    # Performance Settings
+    MAX_CONCURRENT_EXTRACTIONS: int = 10
+    MAX_CONCURRENT_SYNTHESES: int = 5
+    CACHE_TTL_SECONDS: int = 3600  # 1 hour
+    MAX_CACHE_SIZE_MB: int = 500
+    
+    # Error Handling
+    DETAILED_ERROR_MESSAGES: bool = False  # Security: Don't expose details in production
+    ERROR_TRACKING_ENABLED: bool = True
+    EXCEPTION_REPORTING_ENABLED: bool = True
+    
+    # Development & Debug
+    DEBUG_MODE: bool = False
+    VERBOSE_LOGGING: bool = False
+    PROFILING_ENABLED: bool = False
+    
+    # Enterprise Integration
+    LDAP_ENABLED: bool = False
+    LDAP_SERVER: Optional[str] = None
+    LDAP_DOMAIN: Optional[str] = None
+    
+    SAML_ENABLED: bool = False
+    SAML_IDP_URL: Optional[str] = None
+    SAML_ENTITY_ID: Optional[str] = None
+    
+    # Webhook Configuration
+    WEBHOOK_ENABLED: bool = True
+    WEBHOOK_SECRET: str = ""
+    WEBHOOK_TIMEOUT_SECONDS: int = 30
+    WEBHOOK_RETRY_ATTEMPTS: int = 3
+    
+    # Redis Configuration (for rate limiting, caching, sessions)
+    REDIS_URL: Optional[str] = "redis://localhost:6379/0"
+    REDIS_PASSWORD: Optional[str] = None
+    REDIS_SSL: bool = False
+    
+    # Email Configuration (for alerts, notifications)
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_USE_TLS: bool = True
+    
+    # Notification Settings
+    SECURITY_ALERT_EMAIL: Optional[str] = None
+    ADMIN_ALERT_EMAIL: Optional[str] = None
+    PERFORMANCE_ALERT_EMAIL: Optional[str] = None
+    
+    # API Documentation
+    DOCS_ENABLED: bool = True
+    REDOC_ENABLED: bool = True
+    OPENAPI_URL: str = "/openapi.json"
+    
+    # Health Check Configuration
+    HEALTH_CHECK_ENABLED: bool = True
+    HEALTH_CHECK_INTERVAL_SECONDS: int = 30
+    HEALTH_CHECK_TIMEOUT_SECONDS: int = 10
+    
+    # Metrics & Analytics
+    METRICS_ENABLED: bool = True
+    METRICS_EXPORT_ENABLED: bool = False
+    ANALYTICS_ENABLED: bool = True
+    USAGE_TRACKING_ENABLED: bool = True
+    
+    # File Upload Security
+    MAX_UPLOAD_SIZE_MB: int = 10
+    ALLOWED_FILE_TYPES: List[str] = [".txt", ".pdf", ".docx", ".html"]
+    VIRUS_SCANNING_ENABLED: bool = False  # Requires external service
+    
+    # IP Security
+    IP_WHITELIST_ENABLED: bool = False
+    IP_WHITELIST: List[str] = []
+    IP_BLACKLIST_ENABLED: bool = True
+    IP_BLACKLIST: List[str] = []
+    GEOLOCATION_BLOCKING_ENABLED: bool = False
+    BLOCKED_COUNTRIES: List[str] = []
+    
+    # User Security
+    MAX_LOGIN_ATTEMPTS: int = 5
+    ACCOUNT_LOCKOUT_DURATION_MINUTES: int = 30
+    MFA_ENABLED: bool = False
+    MFA_REQUIRED_FOR_ADMIN: bool = True
+    
+    # Content Security Headers
+    CSP_ENABLED: bool = True
+    CSP_POLICY: str = "default-src 'self'; script-src 'self'; object-src 'none';"
+    FRAME_OPTIONS: str = "DENY"
+    CONTENT_TYPE_NOSNIFF: bool = True
+    XSS_PROTECTION: str = "1; mode=block"
+    
+    # Database Security
+    DB_ENCRYPTION_ENABLED: bool = True
+    DB_CONNECTION_POOL_SIZE: int = 10
+    DB_CONNECTION_TIMEOUT: int = 30
+    DB_QUERY_TIMEOUT: int = 60
+    
+    # Logging Configuration
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - [%(module)s:%(lineno)d] %(message)s"
+    LOG_TO_FILE: bool = True
+    LOG_FILE_PATH: str = "logs/tts_api.log"
+    LOG_FILE_MAX_SIZE_MB: int = 100
+    LOG_FILE_BACKUP_COUNT: int = 5
+    
+    # Security Logging
+    SECURITY_LOG_ENABLED: bool = True
+    SECURITY_LOG_FILE: str = "logs/security_audit.log"
+    SECURITY_LOG_LEVEL: str = "INFO"
+    FAILED_LOGIN_LOG_ENABLED: bool = True
+    
+    # Enterprise Features
+    MULTI_TENANCY_ENABLED: bool = False
+    TENANT_ISOLATION_ENABLED: bool = False
+    CUSTOM_BRANDING_ENABLED: bool = False
+    WHITE_LABEL_MODE: bool = False
+    
+    # API Versioning
+    API_VERSION: str = "v1"
+    API_DEPRECATION_WARNINGS: bool = True
+    LEGACY_API_SUPPORT: bool = True
+    
+    # Internationalization
+    DEFAULT_LANGUAGE: str = "en"
+    SUPPORTED_LANGUAGES: List[str] = ["en", "es", "fr", "de", "it", "pt"]
+    TIMEZONE: str = "UTC"
+    
+    # Content Processing
+    TEXT_PREPROCESSING_ENABLED: bool = True
+    HTML_SANITIZATION_ENABLED: bool = True
+    MARKDOWN_PROCESSING_ENABLED: bool = True
+    LANGUAGE_DETECTION_ENABLED: bool = True
+    
+    # AWS Services Extended Configuration
+    AWS_CLOUDWATCH_ENABLED: bool = False
+    AWS_XRAY_ENABLED: bool = False
+    AWS_SECRETS_MANAGER_ENABLED: bool = False
+    AWS_KMS_ENABLED: bool = False
+    
+    # Third-party Integrations
+    GOOGLE_ANALYTICS_ENABLED: bool = False
+    GOOGLE_ANALYTICS_ID: Optional[str] = None
+    SENTRY_ENABLED: bool = False
+    SENTRY_DSN: Optional[str] = None
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = True
+        extra = "allow"  # Allow extra fields for backward compatibility
         
-        missing_vars = [var for var in required_vars if not os.environ.get(var)]
-        return missing_vars
+        # Security: Validate sensitive fields
+        @classmethod
+        def parse_env_vars(cls, field_name: str, raw_val: str) -> str:
+            """Parse environment variables with security validation"""
+            # Sanitize sensitive configuration values
+            if field_name in ['SECRET_KEY', 'JWT_SECRET_KEY', 'AWS_SECRET_ACCESS_KEY', 'STRIPE_API_KEY']:
+                if len(raw_val) < 16:
+                    raise ValueError(f"{field_name} must be at least 16 characters long")
+            return raw_val
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        # Handle legacy configuration mapping
+        if self.JWT_SECRET_KEY and not hasattr(self, '_secret_key_set'):
+            self.SECRET_KEY = self.JWT_SECRET_KEY
+            self._secret_key_set = True
+            
+        if self.DATABASE_CONNECTION_STRING and not hasattr(self, '_database_url_set'):
+            self.DATABASE_URL = self.DATABASE_CONNECTION_STRING
+            self._database_url_set = True
 
-# Global configuration instance
-config = AppConfig()
+class SecurityConfig:
+    """Enterprise security configuration constants"""
+    
+    # Security Headers
+    SECURITY_HEADERS = {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "X-XSS-Protection": "1; mode=block",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+        "Content-Security-Policy": "default-src 'self'; script-src 'self'; object-src 'none';",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Permissions-Policy": "geolocation=(), microphone=(), camera=()"
+    }
+    
+    # Blocked User Agents (Security threats)
+    BLOCKED_USER_AGENTS = [
+        "sqlmap", "nikto", "nmap", "masscan", "burpsuite", 
+        "owasp", "acunetix", "netsparker", "appscan"
+    ]
+    
+    # Suspicious Content Patterns
+    SUSPICIOUS_PATTERNS = [
+        r'<script[^>]*>.*?</script>',
+        r'javascript:',
+        r'on\w+\s*=',
+        r'eval\s*\(',
+        r'document\.',
+        r'window\.',
+        r'union\s+select',
+        r'drop\s+table',
+        r'delete\s+from',
+        r'insert\s+into',
+        r'--',
+        r'/\*.*?\*/',
+        r'exec\s*\(',
+        r'system\s*\(',
+        r'file://',
+        r'ftp://',
+        r'data:',
+    ]
+    
+    # Rate Limiting Configuration
+    RATE_LIMITS = {
+        "global": {"requests": 1000, "window": 3600},  # 1000 req/hour global
+        "per_user": {"requests": 100, "window": 3600},  # 100 req/hour per user
+        "per_ip": {"requests": 200, "window": 3600},    # 200 req/hour per IP
+        "auth": {"requests": 10, "window": 900},        # 10 auth attempts per 15min
+        "extraction": {"requests": 50, "window": 3600}, # 50 extractions per hour
+        "synthesis": {"requests": 30, "window": 3600}   # 30 synthesis per hour
+    }
+    
+    # Security Event Types
+    SECURITY_EVENT_TYPES = {
+        "LOGIN_SUCCESS": "INFO",
+        "LOGIN_FAILURE": "MEDIUM",
+        "LOGIN_BRUTEFORCE": "HIGH",
+        "EXTRACTION_INITIATED": "LOW",
+        "EXTRACTION_FAILED": "MEDIUM",
+        "CONTENT_SECURITY_VIOLATION": "HIGH",
+        "RATE_LIMIT_EXCEEDED": "MEDIUM",
+        "SUSPICIOUS_ACTIVITY": "HIGH",
+        "DATA_BREACH_ATTEMPT": "CRITICAL",
+        "PRIVILEGE_ESCALATION": "CRITICAL",
+        "MALWARE_DETECTED": "CRITICAL"
+    }
 
-# Validate environment on import
-missing_vars = config.validate_required_env_vars()
-if missing_vars:
-    raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+class PerformanceConfig:
+    """Performance and optimization configuration"""
+    
+    # Connection Pools
+    DB_POOL_SIZE = 20
+    DB_MAX_OVERFLOW = 30
+    REDIS_POOL_SIZE = 10
+    
+    # Timeout Settings
+    REQUEST_TIMEOUT = 30
+    DB_QUERY_TIMEOUT = 60
+    EXTRACTION_TIMEOUT = 300
+    SYNTHESIS_TIMEOUT = 120
+    
+    # Caching Configuration
+    CACHE_DEFAULT_TTL = 3600  # 1 hour
+    CACHE_MAX_SIZE = 1000     # Max items
+    CACHE_CLEANUP_INTERVAL = 300  # 5 minutes
+    
+    # Background Task Configuration
+    MAX_BACKGROUND_TASKS = 10
+    TASK_TIMEOUT = 600  # 10 minutes
+    TASK_RETRY_ATTEMPTS = 3
+
+# Create global configuration instance
+config = EnterpriseConfig()
+
+# Validation functions
+def validate_security_config():
+    """Validate security configuration on startup"""
+    errors = []
+    
+    # Get the effective secret key (handle legacy JWT_SECRET_KEY)
+    effective_secret_key = config.SECRET_KEY
+    if config.JWT_SECRET_KEY:
+        effective_secret_key = config.JWT_SECRET_KEY
+    
+    # Validate required security settings
+    if not effective_secret_key or len(effective_secret_key) < 32:
+        errors.append("SECRET_KEY/JWT_SECRET_KEY must be at least 32 characters for enterprise security")
+    
+    if config.ENTERPRISE_SECURITY_ENABLED and not config.AUDIT_LOGGING_ENABLED:
+        errors.append("Audit logging must be enabled for enterprise security compliance")
+    
+    if config.TLS_VERSION_MIN not in ["1.2", "1.3"]:
+        errors.append("TLS version must be 1.2 or higher for enterprise security")
+    
+    if config.PASSWORD_MIN_LENGTH < 12:
+        errors.append("Password minimum length must be at least 12 characters")
+    
+    # Validate AWS configuration if Textract is enabled
+    if config.TEXTRACT_EXTRACTION_ENABLED:
+        if not config.AWS_ACCESS_KEY_ID or not config.AWS_SECRET_ACCESS_KEY:
+            errors.append("AWS credentials required for Textract extraction")
+    
+    # Validate database configuration
+    effective_db_url = config.DATABASE_URL
+    if config.DATABASE_CONNECTION_STRING:
+        effective_db_url = config.DATABASE_CONNECTION_STRING
+    
+    if not effective_db_url:
+        errors.append("Database configuration required (DATABASE_URL or DATABASE_CONNECTION_STRING)")
+    
+    if errors:
+        raise ValueError(f"Security configuration validation failed: {'; '.join(errors)}")
+    
+    # Log successful validation with legacy field mapping
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info("✅ Enterprise security configuration validated successfully")
+    if config.JWT_SECRET_KEY:
+        logger.info("📋 Legacy JWT_SECRET_KEY mapped to SECRET_KEY")
+    if config.DATABASE_CONNECTION_STRING:
+        logger.info("📋 Legacy DATABASE_CONNECTION_STRING mapped to DATABASE_URL")
+
+def get_environment_info():
+    """Get current environment information"""
+    return {
+        "environment": os.getenv("ENVIRONMENT", "development"),
+        "debug_mode": config.DEBUG_MODE,
+        "enterprise_security": config.ENTERPRISE_SECURITY_ENABLED,
+        "version": config.VERSION,
+        "features": {
+            "textract": config.TEXTRACT_EXTRACTION_ENABLED,
+            "highlighting": config.ADVANCED_HIGHLIGHTING_ENABLED,
+            "speech_marks": config.SPEECH_MARKS_ENABLED,
+            "audit_logging": config.AUDIT_LOGGING_ENABLED,
+            "rate_limiting": config.RATE_LIMIT_ENABLED
+        }
+    }
+
+# Export commonly used configurations
+__all__ = [
+    "config",
+    "SecurityConfig", 
+    "PerformanceConfig",
+    "validate_security_config",
+    "get_environment_info"
+]
