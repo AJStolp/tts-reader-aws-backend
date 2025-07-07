@@ -1,11 +1,12 @@
 """
-Advanced highlighting system for TTS content with speech synchronization
+FIXED highlighting.py - Advanced highlighting system for TTS content with speech synchronization
+Properly integrates with enhanced_calculations.py and frontend highlighting.ts
 """
 import re
 import json
 import logging
 from typing import List, Dict, Optional, Tuple, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ class HighlightSegment:
     confidence: float = 1.0
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for API responses"""
+        """Convert to dictionary for API responses - matches frontend expectations"""
         return {
             "text": self.text,
             "start_char": self.start_char,
@@ -46,6 +47,7 @@ class WordHighlight:
     end_time: float
     
     def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for API responses - matches frontend expectations"""
         return {
             "word": self.word,
             "start_char": self.start_char,
@@ -65,13 +67,14 @@ class HighlightMap:
     created_at: datetime
     
     def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for API responses - matches frontend expectations"""
         return {
             "text": self.text,
             "segments": [seg.to_dict() for seg in self.segments],
             "words": [word.to_dict() for word in self.words],
             "total_duration": self.total_duration,
             "extraction_method": self.extraction_method,
-            "created_at": self.created_at.isoformat(),
+            "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
             "segment_count": len(self.segments),
             "word_count": len(self.words)
         }
@@ -416,7 +419,7 @@ class HighlightGenerator:
             "word_count": len(highlight_map.words)
         }
 
-# Utility functions for highlighting
+# Utility functions for highlighting that enhanced_calculations.py imports
 def create_basic_highlight_map(text: str, extraction_method: str = "unknown") -> HighlightMap:
     """Create a basic highlighting map without speech marks"""
     generator = HighlightGenerator()
@@ -439,3 +442,154 @@ def optimize_text_for_highlighting(text: str) -> str:
     """Optimize text for better highlighting results"""
     processor = TextProcessor()
     return processor.normalize_text_for_highlighting(text)
+
+# Additional utility functions for enhanced_calculations.py integration
+def create_enhanced_highlight_map_from_backend_data(
+    text: str,
+    backend_segments: List[Dict[str, Any]],
+    backend_words: List[Dict[str, Any]],
+    extraction_method: str = "backend"
+) -> HighlightMap:
+    """Create highlight map from backend segment and word data"""
+    
+    # Convert backend segments to HighlightSegment objects
+    segments = []
+    for seg_data in backend_segments:
+        segments.append(HighlightSegment(
+            text=seg_data.get('text', ''),
+            start_char=seg_data.get('start_char', 0),
+            end_char=seg_data.get('end_char', 0),
+            start_time=seg_data.get('start_time', 0),
+            end_time=seg_data.get('end_time', 0),
+            word_count=seg_data.get('word_count', 0),
+            segment_id=seg_data.get('segment_id', ''),
+            confidence=seg_data.get('confidence', 1.0)
+        ))
+    
+    # Convert backend words to WordHighlight objects
+    words = []
+    for word_data in backend_words:
+        words.append(WordHighlight(
+            word=word_data.get('word', ''),
+            start_char=word_data.get('start_char', 0),
+            end_char=word_data.get('end_char', 0),
+            start_time=word_data.get('start_time', 0),
+            end_time=word_data.get('end_time', 0)
+        ))
+    
+    # Calculate total duration
+    total_duration = max([seg.end_time for seg in segments]) if segments else 0
+    
+    return HighlightMap(
+        text=text,
+        segments=segments,
+        words=words,
+        total_duration=total_duration,
+        extraction_method=extraction_method,
+        created_at=datetime.now(timezone.utc)
+    )
+
+def merge_highlight_maps(highlight_maps: List[HighlightMap]) -> HighlightMap:
+    """Merge multiple highlight maps into one"""
+    if not highlight_maps:
+        return create_basic_highlight_map("")
+    
+    if len(highlight_maps) == 1:
+        return highlight_maps[0]
+    
+    # Combine all text
+    combined_text = ""
+    combined_segments = []
+    combined_words = []
+    total_duration = 0
+    char_offset = 0
+    time_offset = 0
+    
+    for highlight_map in highlight_maps:
+        # Adjust character positions for combined text
+        for segment in highlight_map.segments:
+            adjusted_segment = HighlightSegment(
+                text=segment.text,
+                start_char=segment.start_char + char_offset,
+                end_char=segment.end_char + char_offset,
+                start_time=segment.start_time + time_offset,
+                end_time=segment.end_time + time_offset,
+                word_count=segment.word_count,
+                segment_id=f"merged_{segment.segment_id}",
+                confidence=segment.confidence
+            )
+            combined_segments.append(adjusted_segment)
+        
+        # Adjust word positions for combined text
+        for word in highlight_map.words:
+            adjusted_word = WordHighlight(
+                word=word.word,
+                start_char=word.start_char + char_offset,
+                end_char=word.end_char + char_offset,
+                start_time=word.start_time + time_offset,
+                end_time=word.end_time + time_offset
+            )
+            combined_words.append(adjusted_word)
+        
+        # Update offsets for next map
+        combined_text += highlight_map.text + " "
+        char_offset = len(combined_text)
+        time_offset += highlight_map.total_duration + 500  # 500ms pause between maps
+        total_duration = time_offset
+    
+    return HighlightMap(
+        text=combined_text.strip(),
+        segments=combined_segments,
+        words=combined_words,
+        total_duration=total_duration,
+        extraction_method="merged",
+        created_at=datetime.now(timezone.utc)
+    )
+
+def validate_highlighting_compatibility(highlight_map: HighlightMap, text: str) -> Dict[str, Any]:
+    """Validate that highlighting map is compatible with given text"""
+    issues = []
+    
+    # Check text length compatibility
+    if len(highlight_map.text) != len(text):
+        issues.append(f"Text length mismatch: highlight_map has {len(highlight_map.text)}, provided text has {len(text)}")
+    
+    # Check segment positions
+    for segment in highlight_map.segments:
+        if segment.end_char > len(text):
+            issues.append(f"Segment {segment.segment_id} end position {segment.end_char} exceeds text length {len(text)}")
+        
+        if segment.start_char < 0:
+            issues.append(f"Segment {segment.segment_id} has negative start position {segment.start_char}")
+    
+    # Check word positions
+    for i, word in enumerate(highlight_map.words):
+        if word.end_char > len(text):
+            issues.append(f"Word {i} end position {word.end_char} exceeds text length {len(text)}")
+        
+        if word.start_char < 0:
+            issues.append(f"Word {i} has negative start position {word.start_char}")
+    
+    return {
+        "compatible": len(issues) == 0,
+        "issues": issues,
+        "text_length_match": len(highlight_map.text) == len(text),
+        "segment_positions_valid": all(0 <= seg.start_char <= seg.end_char <= len(text) for seg in highlight_map.segments),
+        "word_positions_valid": all(0 <= word.start_char <= word.end_char <= len(text) for word in highlight_map.words)
+    }
+
+# Export classes and functions for enhanced_calculations.py
+__all__ = [
+    'HighlightSegment',
+    'WordHighlight', 
+    'HighlightMap',
+    'TextProcessor',
+    'SpeechMarkProcessor',
+    'HighlightGenerator',
+    'create_basic_highlight_map',
+    'create_highlight_with_speech_marks',
+    'optimize_text_for_highlighting',
+    'create_enhanced_highlight_map_from_backend_data',
+    'merge_highlight_maps',
+    'validate_highlighting_compatibility'
+]

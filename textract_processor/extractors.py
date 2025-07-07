@@ -1,5 +1,5 @@
 """
-Content extraction implementations for different methods
+Content extraction implementations for different methods - FIXED for Playwright compatibility
 """
 import asyncio
 import time
@@ -114,7 +114,7 @@ class TextractExtractor(BaseExtractor):
             return None
     
     async def _render_page_to_pdf(self, url: str) -> Optional[bytes]:
-        """Render webpage to PDF for Textract processing"""
+        """Render webpage to PDF for Textract processing - FIXED for Playwright compatibility"""
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
@@ -130,9 +130,15 @@ class TextractExtractor(BaseExtractor):
                 )
                 
                 try:
-                    page = await browser.new_page()
-                    await page.set_user_agent(self.config.user_agents[0])
-                    await page.set_viewport_size({"width": 1200, "height": 800})
+                    # FIXED: Set user agent during context creation
+                    user_agent = self.config.user_agents[0] if hasattr(self.config, 'user_agents') and self.config.user_agents else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                    
+                    context = await browser.new_context(
+                        user_agent=user_agent,
+                        viewport={"width": 1200, "height": 800}
+                    )
+                    
+                    page = await context.new_page()
                     
                     # Enhanced page setup for better content rendering
                     await page.set_extra_http_headers({
@@ -262,7 +268,7 @@ class TextractExtractor(BaseExtractor):
 
 
 class DOMExtractor(BaseExtractor):
-    """DOM-based content extractor with multiple strategies for TTS optimization"""
+    """DOM-based content extractor with multiple strategies for TTS optimization - FIXED"""
     
     async def extract(self, url: str, page_analysis: PageAnalysis = None) -> Optional[ExtractionResult]:
         """Extract content using DOM traversal with multiple strategies"""
@@ -287,12 +293,22 @@ class DOMExtractor(BaseExtractor):
                     )
                     
                     try:
-                        page = await browser.new_page()
+                        # FIXED: Set user agent during context creation
+                        user_agent_list = getattr(self.config, 'user_agents', [
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                        ])
                         
                         # Rotate user agents on retries
-                        user_agent = self.config.user_agents[attempt % len(self.config.user_agents)]
-                        await page.set_user_agent(user_agent)
-                        await page.set_viewport_size({"width": 1200, "height": 800})
+                        user_agent = user_agent_list[attempt % len(user_agent_list)]
+                        
+                        context = await browser.new_context(
+                            user_agent=user_agent,
+                            viewport={"width": 1200, "height": 800}
+                        )
+                        
+                        page = await context.new_page()
                         
                         # Navigate with error handling
                         try:
@@ -348,14 +364,28 @@ class DOMExtractor(BaseExtractor):
     async def _extract_semantic_content(self, page, url: str, content_type: ContentType, start_time: float) -> Optional[ExtractionResult]:
         """Extract content using semantic HTML elements"""
         try:
-            for selector, priority in sorted(self.config.content_selectors.items(), key=lambda x: x[1], reverse=True):
+            content_selectors = getattr(self.config, 'content_selectors', {
+                'article': 10,
+                'main': 9,
+                '[role="main"]': 9,
+                '.content': 8,
+                '.post-content': 8,
+                '.entry-content': 8,
+                '.article-content': 8,
+                '.page-content': 7,
+                '.post-body': 7,
+                '.story-body': 7,
+                'section': 6
+            })
+            
+            for selector, priority in sorted(content_selectors.items(), key=lambda x: x[1], reverse=True):
                 try:
                     elements = await page.query_selector_all(selector)
                     
                     for element in elements:
                         if await self._is_likely_main_content(element):
                             text = await element.inner_text()
-                            if text and len(text.strip()) >= self.config.min_text_length:
+                            if text and len(text.strip()) >= getattr(self.config, 'min_text_length', 200):
                                 
                                 processing_time = time.time() - start_time
                                 confidence = min(0.9, priority / 10.0)
@@ -435,7 +465,7 @@ class DOMExtractor(BaseExtractor):
             if candidates and len(candidates) > 0:
                 best_candidate = candidates[0]
                 
-                if best_candidate['textLength'] >= self.config.min_text_length:
+                if best_candidate['textLength'] >= getattr(self.config, 'min_text_length', 200):
                     processing_time = time.time() - start_time
                     confidence = min(0.8, best_candidate['score'] / (best_candidate['textLength'] * 2))
                     
@@ -501,7 +531,7 @@ class DOMExtractor(BaseExtractor):
                 }
             ''')
             
-            if extracted_text and len(extracted_text) >= self.config.min_text_length:
+            if extracted_text and len(extracted_text) >= getattr(self.config, 'min_text_length', 200):
                 processing_time = time.time() - start_time
                 
                 metadata = {
@@ -525,11 +555,11 @@ class DOMExtractor(BaseExtractor):
         try:
             body_text = await page.inner_text('body')
             
-            if body_text and len(body_text) >= self.config.min_text_length:
+            if body_text and len(body_text) >= getattr(self.config, 'min_text_length', 200):
                 # Apply aggressive filtering for fallback content
-                filtered_text = TextCleaner.filter_navigation_content(body_text)
+                filtered_text = TextCleaner.filter_navigation_content(body_text) if hasattr(TextCleaner, 'filter_navigation_content') else body_text
                 
-                if len(filtered_text) >= self.config.min_text_length:
+                if len(filtered_text) >= getattr(self.config, 'min_text_length', 200):
                     processing_time = time.time() - start_time
                     
                     metadata = {
@@ -576,7 +606,8 @@ class DOMExtractor(BaseExtractor):
             
             # Check text content
             text = await element.inner_text()
-            if not text or len(text.strip()) < self.config.min_text_length:
+            min_text_length = getattr(self.config, 'min_text_length', 200)
+            if not text or len(text.strip()) < min_text_length:
                 return False
             
             # Check for high link density (bad for TTS)
@@ -625,7 +656,12 @@ class PageAnalyzer:
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
+                
+                # FIXED: Set user agent during context creation
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                )
+                page = await context.new_page()
                 
                 try:
                     await page.goto(url, wait_until="domcontentloaded", timeout=self.config.page_load_timeout)
@@ -680,7 +716,7 @@ class PageAnalyzer:
                     ''')
                     
                     # Estimate reading time
-                    estimated_reading_time = ContentAnalyzer.estimate_reading_time(await page.inner_text('body'))
+                    estimated_reading_time = ContentAnalyzer.estimate_reading_time(await page.inner_text('body')) if hasattr(ContentAnalyzer, 'estimate_reading_time') else 0
                     
                     return PageAnalysis(
                         url=url,
@@ -698,360 +734,3 @@ class PageAnalyzer:
         except Exception as e:
             logger.error(f"Failed to analyze page {url}: {str(e)}")
             return None
-            
-        except Exception as e:
-            logger.error(f"Error processing Textract response: {str(e)}")
-            return ""
-
-
-class DOMExtractor(BaseExtractor):
-    """DOM-based content extractor with multiple strategies for TTS optimization"""
-    
-    async def extract(self, url: str, page_analysis: PageAnalysis = None) -> Optional[ExtractionResult]:
-        """Extract content using DOM traversal with multiple strategies"""
-        start_time = time.time()
-        content_type = page_analysis.content_type if page_analysis else ContentType.UNKNOWN
-        
-        for attempt in range(self.config.max_retries):
-            try:
-                logger.info(f"Starting DOM extraction for TTS: {url} (attempt {attempt + 1})")
-                
-                async with async_playwright() as p:
-                    browser = await p.chromium.launch(
-                        headless=True,
-                        args=[
-                            '--no-sandbox',
-                            '--disable-setuid-sandbox',
-                            '--disable-dev-shm-usage',
-                            '--disable-gpu',
-                            '--disable-images',  # Faster loading
-                            '--disable-javascript' if attempt > 0 else '',  # Try without JS on retry
-                        ]
-                    )
-                    
-                    try:
-                        page = await browser.new_page()
-                        
-                        # Rotate user agents on retries
-                        user_agent = self.config.user_agents[attempt % len(self.config.user_agents)]
-                        await page.set_user_agent(user_agent)
-                        await page.set_viewport_size({"width": 1200, "height": 800})
-                        
-                        # Navigate with error handling
-                        try:
-                            await page.goto(url, wait_until="networkidle", timeout=self.config.page_load_timeout)
-                        except PlaywrightTimeoutError:
-                            await page.goto(url, wait_until="domcontentloaded", timeout=self.config.page_load_timeout)
-                        
-                        await page.wait_for_timeout(self.config.content_load_wait)
-                        
-                        # Try extraction strategies in order of preference
-                        result = await self._try_extraction_strategies(page, url, content_type, start_time)
-                        
-                        if result:
-                            return result
-                        
-                    finally:
-                        await browser.close()
-                
-                if attempt < self.config.max_retries - 1:
-                    await asyncio.sleep(self.config.retry_delay)
-                    
-            except Exception as e:
-                logger.warning(f"DOM extraction attempt {attempt + 1} failed: {str(e)}")
-                if attempt < self.config.max_retries - 1:
-                    await asyncio.sleep(self.config.retry_delay)
-                else:
-                    logger.error(f"All DOM extraction attempts failed for {url}")
-        
-        return None
-    
-    async def _try_extraction_strategies(self, page, url: str, content_type: ContentType, start_time: float) -> Optional[ExtractionResult]:
-        """Try multiple extraction strategies for TTS content"""
-        
-        # Strategy 1: Semantic extraction (best for TTS)
-        result = await self._extract_semantic_content(page, url, content_type, start_time)
-        if result and result.confidence > 0.7:
-            return result
-        
-        # Strategy 2: Heuristic-based extraction
-        result = await self._extract_heuristic_content(page, url, content_type, start_time)
-        if result and result.confidence > 0.6:
-            return result
-        
-        # Strategy 3: Reader mode extraction
-        result = await self._extract_reader_mode_content(page, url, content_type, start_time)
-        if result and result.confidence > 0.5:
-            return result
-        
-        # Strategy 4: Fallback extraction
-        result = await self._extract_fallback_content(page, url, content_type, start_time)
-        return result
-    
-    async def _extract_semantic_content(self, page, url: str, content_type: ContentType, start_time: float) -> Optional[ExtractionResult]:
-        """Extract content using semantic HTML elements"""
-        try:
-            for selector, priority in sorted(self.config.content_selectors.items(), key=lambda x: x[1], reverse=True):
-                try:
-                    elements = await page.query_selector_all(selector)
-                    
-                    for element in elements:
-                        if await self._is_likely_main_content(element):
-                            text = await element.inner_text()
-                            if text and len(text.strip()) >= self.config.min_text_length:
-                                
-                                processing_time = time.time() - start_time
-                                confidence = min(0.9, priority / 10.0)
-                                
-                                metadata = {
-                                    'selector': selector,
-                                    'priority': priority,
-                                    'url': url,
-                                    'method_specific': 'semantic_html'
-                                }
-                                
-                                return self._create_result(
-                                    text, ExtractionMethod.DOM_SEMANTIC, content_type,
-                                    processing_time, metadata
-                                )
-                except Exception:
-                    continue
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error in semantic extraction: {str(e)}")
-            return None
-    
-    async def _extract_heuristic_content(self, page, url: str, content_type: ContentType, start_time: float) -> Optional[ExtractionResult]:
-        """Extract content using heuristic analysis for TTS optimization"""
-        try:
-            candidates = await page.evaluate('''
-                () => {
-                    const elements = document.querySelectorAll('div, section, article, main, p');
-                    const candidates = [];
-                    
-                    elements.forEach(el => {
-                        const text = el.innerText || '';
-                        const textLength = text.trim().length;
-                        
-                        if (textLength < 100) return;
-                        
-                        let score = textLength;
-                        
-                        // Boost for semantic elements
-                        if (['ARTICLE', 'MAIN', 'SECTION'].includes(el.tagName)) {
-                            score *= 1.5;
-                        }
-                        
-                        // Boost for content-related classes/ids
-                        const classId = (el.className + ' ' + el.id).toLowerCase();
-                        if (classId.includes('content') || classId.includes('article') || classId.includes('post')) {
-                            score *= 1.3;
-                        }
-                        
-                        // Penalize navigation-like elements
-                        if (classId.includes('nav') || classId.includes('menu') || classId.includes('sidebar')) {
-                            score *= 0.3;
-                        }
-                        
-                        // Check link density (high link density = poor TTS content)
-                        const links = el.querySelectorAll('a');
-                        const linkText = Array.from(links).reduce((acc, link) => acc + (link.innerText || '').length, 0);
-                        const linkDensity = textLength > 0 ? linkText / textLength : 1;
-                        
-                        if (linkDensity > 0.5) score *= 0.5;
-                        
-                        candidates.push({
-                            score: score,
-                            textLength: textLength,
-                            linkDensity: linkDensity,
-                            tagName: el.tagName,
-                            text: text.substring(0, 5000)
-                        });
-                    });
-                    
-                    return candidates.sort((a, b) => b.score - a.score).slice(0, 5);
-                }
-            ''')
-            
-            if candidates and len(candidates) > 0:
-                best_candidate = candidates[0]
-                
-                if best_candidate['textLength'] >= self.config.min_text_length:
-                    processing_time = time.time() - start_time
-                    confidence = min(0.8, best_candidate['score'] / (best_candidate['textLength'] * 2))
-                    
-                    metadata = {
-                        'score': best_candidate['score'],
-                        'link_density': best_candidate['linkDensity'],
-                        'tag_name': best_candidate['tagName'],
-                        'url': url,
-                        'method_specific': 'heuristic_analysis'
-                    }
-                    
-                    return self._create_result(
-                        best_candidate['text'], ExtractionMethod.DOM_HEURISTIC, content_type,
-                        processing_time, metadata
-                    )
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error in heuristic extraction: {str(e)}")
-            return None
-    
-    async def _extract_reader_mode_content(self, page, url: str, content_type: ContentType, start_time: float) -> Optional[ExtractionResult]:
-        """Extract content using reader mode algorithm for TTS"""
-        try:
-            extracted_text = await page.evaluate('''
-                () => {
-                    // Remove unwanted elements
-                    const unwantedSelectors = [
-                        'script', 'style', 'nav', 'header', 'footer', 'aside',
-                        '.advertisement', '.ad', '.sidebar', '.menu', '.navigation',
-                        '.social', '.share', '.related', '.comments', '.skip-link'
-                    ];
-                    
-                    unwantedSelectors.forEach(selector => {
-                        document.querySelectorAll(selector).forEach(el => el.remove());
-                    });
-                    
-                    // Find the best content container for TTS
-                    const containers = document.querySelectorAll('div, article, section, main');
-                    let bestContainer = null;
-                    let maxScore = 0;
-                    
-                    containers.forEach(container => {
-                        const text = container.innerText || '';
-                        const paragraphs = container.querySelectorAll('p').length;
-                        const textLength = text.length;
-                        
-                        const score = textLength + (paragraphs * 100);
-                        
-                        if (score > maxScore && textLength > 200) {
-                            maxScore = score;
-                            bestContainer = container;
-                        }
-                    });
-                    
-                    if (bestContainer) {
-                        const paragraphs = Array.from(bestContainer.querySelectorAll('p, h1, h2, h3, h4, h5, h6'));
-                        return paragraphs.map(p => p.innerText.trim()).filter(text => text.length > 10).join('\\n\\n');
-                    }
-                    
-                    return '';
-                }
-            ''')
-            
-            if extracted_text and len(extracted_text) >= self.config.min_text_length:
-                processing_time = time.time() - start_time
-                
-                metadata = {
-                    'url': url,
-                    'method_specific': 'reader_mode_algorithm'
-                }
-                
-                return self._create_result(
-                    extracted_text, ExtractionMethod.READER_MODE, content_type,
-                    processing_time, metadata
-                )
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error in reader mode extraction: {str(e)}")
-            return None
-    
-    async def _extract_fallback_content(self, page, url: str, content_type: ContentType, start_time: float) -> Optional[ExtractionResult]:
-        """Last resort extraction from body content for TTS"""
-        try:
-            body_text = await page.inner_text('body')
-            
-            if body_text and len(body_text) >= self.config.min_text_length:
-                # Apply aggressive filtering for fallback content
-                filtered_text = TextCleaner.filter_navigation_content(body_text)
-                
-                if len(filtered_text) >= self.config.min_text_length:
-                    processing_time = time.time() - start_time
-                    
-                    metadata = {
-                        'url': url,
-                        'note': 'fallback_extraction',
-                        'method_specific': 'body_content_filtered'
-                    }
-                    
-                    return self._create_result(
-                        filtered_text, ExtractionMethod.DOM_FALLBACK, content_type,
-                        processing_time, metadata
-                    )
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error in fallback extraction: {str(e)}")
-            return None
-    
-    async def _is_likely_main_content(self, element) -> bool:
-        """Determine if element contains main content suitable for TTS"""
-        try:
-            class_name = await element.get_attribute('class') or ''
-            element_id = await element.get_attribute('id') or ''
-            tag_name = await element.evaluate('el => el.tagName.toLowerCase()')
-            
-            combined_attrs = f"{class_name} {element_id}".lower()
-            
-            # Exclude navigation and non-content elements
-            exclude_patterns = [
-                'nav', 'navigation', 'menu', 'sidebar', 'aside', 'header', 'footer',
-                'banner', 'advertisement', 'ad', 'social', 'share', 'related',
-                'comments', 'pagination', 'breadcrumb', 'widget', 'toolbar',
-                'cookie', 'gdpr', 'consent', 'popup', 'modal', 'overlay'
-            ]
-            
-            for pattern in exclude_patterns:
-                if pattern in combined_attrs:
-                    return False
-            
-            # Exclude navigation tags
-            if tag_name in ['nav', 'aside', 'header', 'footer']:
-                return False
-            
-            # Check text content
-            text = await element.inner_text()
-            if not text or len(text.strip()) < self.config.min_text_length:
-                return False
-            
-            # Check for high link density (bad for TTS)
-            try:
-                links = await element.query_selector_all('a')
-                if len(links) > 10:
-                    links = links[:10]
-                
-                link_text_length = 0
-                for link in links:
-                    link_text = await link.inner_text()
-                    link_text_length += len(link_text)
-                
-                if len(text) > 0 and (link_text_length / len(text)) > 0.7:
-                    return False
-            except Exception:
-                pass
-            
-            # Positive indicators for TTS content
-            positive_patterns = [
-                'content', 'article', 'post', 'story', 'main', 'body', 'text'
-            ]
-            
-            for pattern in positive_patterns:
-                if pattern in combined_attrs:
-                    return True
-            
-            # Semantic elements are likely content
-            if tag_name in ['article', 'main', 'section']:
-                return True
-            
-            return True
-            
-        except Exception:
-            return False
