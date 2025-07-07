@@ -32,7 +32,7 @@ try:
     textract = session.client("textract")
     
     # Test Textract connectivity
-    textract.describe_document_analysis(JobId="test-connectivity")
+    textract.get_document_analysis(JobId="test-connectivity")
     _textract_client = textract
     logger.info("AWS Textract client initialized successfully for TTS extraction")
     
