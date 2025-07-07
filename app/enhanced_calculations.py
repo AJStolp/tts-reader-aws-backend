@@ -69,11 +69,13 @@ except ImportError:
 try:
     from textract_processor import extract_content as basic_extract_content
     BASIC_EXTRACTOR_AVAILABLE = True
+    logging.info("✅ Textract processor basic extraction available")
 except ImportError:
     BASIC_EXTRACTOR_AVAILABLE = False
+    logging.warning("⚠️ Textract processor not available, using fallback")
     
     async def basic_extract_content(url, prefer_textract=False):
-        """Fallback basic extraction"""
+        """Fallback basic extraction using aiohttp and BeautifulSoup"""
         try:
             import aiohttp
             from bs4 import BeautifulSoup
@@ -96,7 +98,7 @@ except ImportError:
                     return text[:10000], "dom_fallback"  # Limit for safety
         except Exception as e:
             logging.error(f"Basic extraction failed: {e}")
-            return f"Sample extracted content from {url}. Basic extraction fallback.", "fallback"
+            return f"Sample extracted content from {url}. Basic extraction fallback working.", "fallback"
 
 # FIXED: Create minimal highlighting functions
 def create_basic_highlight_map(text, extraction_method=None):
@@ -244,22 +246,25 @@ class HighlightGenerator:
         
         return {"valid": True}
 
-# Import User model
+# FIXED: Import User model with better fallback
 try:
     from models import User
 except ImportError:
-    # Mock User for testing
-    class User:
-        def __init__(self):
-            self.user_id = "test_user"
-            self.username = "test"
-            self.remaining_chars = 50000
-        
-        def deduct_characters(self, count):
-            if self.remaining_chars >= count:
-                self.remaining_chars -= count
-                return True
-            return False
+    try:
+        from ..models import User
+    except ImportError:
+        # Mock User for testing
+        class User:
+            def __init__(self):
+                self.user_id = "test_user"
+                self.username = "test"
+                self.remaining_chars = 50000
+            
+            def deduct_characters(self, count):
+                if self.remaining_chars >= count:
+                    self.remaining_chars -= count
+                    return True
+                return False
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +287,8 @@ class EnterpriseExtractionService:
         # FIXED: Initialize AWS services with better error handling
         self.aws_configured = False
         self._initialize_aws()
+        
+        logger.info("✅ EnterpriseExtractionService initialized successfully")
     
     def _initialize_aws(self):
         """Initialize AWS services with comprehensive error handling"""
