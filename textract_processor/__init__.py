@@ -31,17 +31,22 @@ try:
     
     textract = session.client("textract")
     
-    # Test Textract connectivity
-    textract.get_document_analysis(JobId="test-connectivity")
-    _textract_client = textract
-    logger.info("AWS Textract client initialized successfully for TTS extraction")
-    
-except ClientError as e:
-    if "InvalidJobIdException" not in str(e):
-        logger.warning(f"Textract client issue: {str(e)}")
-    else:
-        _textract_client = textract
-        logger.info("AWS Textract client initialized successfully for TTS extraction")
+    # FIXED: Test Textract connectivity with correct method name
+    # The correct method is get_document_analysis, not describe_document_analysis
+    try:
+        textract.get_document_analysis(JobId="test-connectivity-check")
+    except ClientError as e:
+        if "InvalidJobIdException" in str(e):
+            # This is expected - we're just testing connectivity
+            _textract_client = textract
+            logger.info("AWS Textract client initialized successfully for TTS extraction")
+        else:
+            logger.warning(f"Textract client issue: {str(e)}")
+            _textract_client = None
+    except Exception as e:
+        logger.warning(f"Textract initialization warning: {str(e)}")
+        _textract_client = textract  # Still set it, might work for actual operations
+        
 except Exception as e:
     logger.error(f"Failed to initialize AWS Textract client: {str(e)}")
     logger.info("TTS extraction will use DOM-only methods")
@@ -108,12 +113,14 @@ async def health_check() -> Dict[str, Any]:
         status["status"] = "degraded"
         logger.error(f"✗ Playwright health check failed: {e}")
     
-    # Test Textract (if available)
+    # FIXED: Test Textract with correct method (if available)
     if _textract_client:
         try:
-            await asyncio.to_thread(_textract_client.describe_document_analysis, JobId="health-check")
+            # FIXED: Use correct method name - get_document_analysis instead of describe_document_analysis
+            await asyncio.to_thread(_textract_client.get_document_analysis, JobId="health-check-test")
         except ClientError as e:
             if "InvalidJobIdException" in str(e):
+                # This is expected for a health check - service is working
                 status["capabilities"].append("textract_extraction")
                 logger.info("✓ Textract health check passed")
             else:
@@ -121,3 +128,10 @@ async def health_check() -> Dict[str, Any]:
                 status["textract_error"] = str(e)
                 status["status"] = "degraded"
                 logger.error(f"✗ Textract health check failed: {e}")
+        except Exception as e:
+            status["textract_available"] = False
+            status["textract_error"] = str(e)
+            status["status"] = "degraded"
+            logger.error(f"✗ Textract health check failed: {e}")
+    
+    return status
