@@ -408,7 +408,7 @@ class EnterpriseExtractionService:
             ))
             
             highlighting_start_time = time.time()
-            # optimized_text = optimize_text_for_highlighting(extracted_text)
+            optimized_text = optimize_text_for_highlighting(extracted_text)
             
             # Step 4: Generate highlighting map
             highlight_map = None
@@ -678,7 +678,7 @@ class EnterpriseExtractionService:
                     logger.info(f"✅ Fallback DOM extraction successful: {len(extracted_text)} chars")
                     return extracted_text, method
             except Exception as e:
-                logger.warning(f"⚠️ Fallback DOM extraction failed: {e}")
+                    logger.warning(f"⚠️ Fallback DOM extraction failed: {e}")
             
             # Step 4: Ultimate fallback
             logger.error(f"❌ All extraction methods failed for {url}")
@@ -1000,7 +1000,7 @@ class EnterpriseExtractionService:
             else:
                 current_chunk = test_chunk
         
-        if current_chunk and len(chunks) < max_chunks:
+        if current_chunk:
             chunks.append(current_chunk.strip())
         
         return chunks
