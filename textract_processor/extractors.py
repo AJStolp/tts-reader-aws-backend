@@ -1,5 +1,6 @@
 """
 Content extraction implementations for different methods - FIXED for Playwright compatibility
+Integrated with enterprise TTS content filtering for optimal AWS Textract processing
 """
 import asyncio
 import time
@@ -61,7 +62,7 @@ class TextractExtractor(BaseExtractor):
         try:
             logger.info(f"Starting Textract extraction for TTS: {url}")
             
-            # Generate PDF from webpage
+            # Generate PDF from webpage with TTS content filtering
             pdf_bytes = await self._render_page_to_pdf(url)
             if not pdf_bytes:
                 return None
@@ -92,7 +93,7 @@ class TextractExtractor(BaseExtractor):
                     'pdf_size': len(pdf_bytes),
                     'textract_blocks': len(response.get('Blocks', [])),
                     'url': url,
-                    'method_specific': 'textract_layout_analysis'
+                    'method_specific': 'textract_layout_analysis_with_tts_filtering'
                 }
                 
                 result = self._create_result(
@@ -114,7 +115,7 @@ class TextractExtractor(BaseExtractor):
             return None
     
     async def _render_page_to_pdf(self, url: str) -> Optional[bytes]:
-        """Render webpage to PDF for Textract processing - FIXED for Playwright compatibility"""
+        """Render webpage to PDF for Textract processing with enterprise TTS content filtering"""
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
@@ -130,7 +131,7 @@ class TextractExtractor(BaseExtractor):
                 )
                 
                 try:
-                    # FIXED: Set user agent during context creation
+                    # Set user agent during context creation
                     user_agent = self.config.user_agents[0] if hasattr(self.config, 'user_agents') and self.config.user_agents else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
                     
                     context = await browser.new_context(
@@ -154,9 +155,27 @@ class TextractExtractor(BaseExtractor):
                         logger.warning(f"Page load timeout for {url}, trying with domcontentloaded")
                         await page.goto(url, wait_until="domcontentloaded", timeout=self.config.page_load_timeout)
                     
-                    # Wait for dynamic content and remove overlays
+                    # Wait for dynamic content and remove basic overlays
                     await page.wait_for_timeout(self.config.content_load_wait)
                     await self._remove_overlays(page)
+                    
+                    # *** ENTERPRISE TTS CONTENT FILTERING ***
+                    # Apply comprehensive content filtering before PDF generation
+                    try:
+                        from .content_filters import apply_tts_content_filtering
+                        title = await page.title()
+                        filtering_success = await apply_tts_content_filtering(page, url, title)
+                        
+                        if filtering_success:
+                            logger.info(f"✅ Successfully applied TTS content filtering for {url}")
+                        else:
+                            logger.warning(f"⚠️ Content filtering failed for {url}, proceeding with basic filtering")
+                            
+                    except ImportError:
+                        logger.warning("TTS content filtering not available, using basic filtering only")
+                    except Exception as filter_error:
+                        logger.error(f"Error during TTS content filtering: {filter_error}")
+                        logger.info("Proceeding with basic filtering for PDF generation")
                     
                     # Generate PDF with optimized settings for text extraction
                     pdf_bytes = await page.pdf(
@@ -166,6 +185,7 @@ class TextractExtractor(BaseExtractor):
                         prefer_css_page_size=True
                     )
                     
+                    logger.info(f"Generated PDF for Textract: {len(pdf_bytes)} bytes")
                     return pdf_bytes
                     
                 finally:
@@ -176,7 +196,7 @@ class TextractExtractor(BaseExtractor):
             return None
     
     async def _remove_overlays(self, page):
-        """Remove overlays and popups that interfere with TTS content"""
+        """Remove overlays and popups that interfere with TTS content (basic filtering)"""
         try:
             await page.evaluate('''
                 () => {
@@ -260,7 +280,9 @@ class TextractExtractor(BaseExtractor):
                         else:
                             main_text_blocks.append(text + ' ')
             
-            return ''.join(main_text_blocks)
+            extracted_text = ''.join(main_text_blocks)
+            logger.info(f"Textract extracted {len(extracted_text)} characters of main content")
+            return extracted_text
             
         except Exception as e:
             logger.error(f"Error processing Textract response: {str(e)}")
@@ -268,7 +290,7 @@ class TextractExtractor(BaseExtractor):
 
 
 class DOMExtractor(BaseExtractor):
-    """DOM-based content extractor with multiple strategies for TTS optimization - FIXED"""
+    """DOM-based content extractor with multiple strategies for TTS optimization"""
     
     async def extract(self, url: str, page_analysis: PageAnalysis = None) -> Optional[ExtractionResult]:
         """Extract content using DOM traversal with multiple strategies"""
@@ -293,7 +315,7 @@ class DOMExtractor(BaseExtractor):
                     )
                     
                     try:
-                        # FIXED: Set user agent during context creation
+                        # Set user agent during context creation
                         user_agent_list = getattr(self.config, 'user_agents', [
                             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -317,6 +339,17 @@ class DOMExtractor(BaseExtractor):
                             await page.goto(url, wait_until="domcontentloaded", timeout=self.config.page_load_timeout)
                         
                         await page.wait_for_timeout(self.config.content_load_wait)
+                        
+                        # Apply TTS content filtering for DOM extraction as well
+                        try:
+                            from .content_filters import apply_tts_content_filtering
+                            title = await page.title()
+                            filtering_success = await apply_tts_content_filtering(page, url, title)
+                            
+                            if filtering_success:
+                                logger.info(f"✅ Applied TTS content filtering for DOM extraction: {url}")
+                        except Exception as filter_error:
+                            logger.warning(f"TTS filtering failed for DOM extraction: {filter_error}")
                         
                         # Try extraction strategies in order of preference
                         result = await self._try_extraction_strategies(page, url, content_type, start_time)
@@ -394,7 +427,7 @@ class DOMExtractor(BaseExtractor):
                                     'selector': selector,
                                     'priority': priority,
                                     'url': url,
-                                    'method_specific': 'semantic_html'
+                                    'method_specific': 'semantic_html_with_tts_filtering'
                                 }
                                 
                                 return self._create_result(
@@ -474,7 +507,7 @@ class DOMExtractor(BaseExtractor):
                         'link_density': best_candidate['linkDensity'],
                         'tag_name': best_candidate['tagName'],
                         'url': url,
-                        'method_specific': 'heuristic_analysis'
+                        'method_specific': 'heuristic_analysis_with_tts_filtering'
                     }
                     
                     return self._create_result(
@@ -493,18 +526,7 @@ class DOMExtractor(BaseExtractor):
         try:
             extracted_text = await page.evaluate('''
                 () => {
-                    // Remove unwanted elements
-                    const unwantedSelectors = [
-                        'script', 'style', 'nav', 'header', 'footer', 'aside',
-                        '.advertisement', '.ad', '.sidebar', '.menu', '.navigation',
-                        '.social', '.share', '.related', '.comments', '.skip-link'
-                    ];
-                    
-                    unwantedSelectors.forEach(selector => {
-                        document.querySelectorAll(selector).forEach(el => el.remove());
-                    });
-                    
-                    // Find the best content container for TTS
+                    // Find the best content container for TTS (content should already be filtered)
                     const containers = document.querySelectorAll('div, article, section, main');
                     let bestContainer = null;
                     let maxScore = 0;
@@ -536,7 +558,7 @@ class DOMExtractor(BaseExtractor):
                 
                 metadata = {
                     'url': url,
-                    'method_specific': 'reader_mode_algorithm'
+                    'method_specific': 'reader_mode_algorithm_with_tts_filtering'
                 }
                 
                 return self._create_result(
@@ -565,7 +587,7 @@ class DOMExtractor(BaseExtractor):
                     metadata = {
                         'url': url,
                         'note': 'fallback_extraction',
-                        'method_specific': 'body_content_filtered'
+                        'method_specific': 'body_content_filtered_with_tts_filtering'
                     }
                     
                     return self._create_result(
@@ -588,12 +610,13 @@ class DOMExtractor(BaseExtractor):
             
             combined_attrs = f"{class_name} {element_id}".lower()
             
-            # Exclude navigation and non-content elements
+            # Exclude navigation and non-content elements (enhanced for TTS)
             exclude_patterns = [
                 'nav', 'navigation', 'menu', 'sidebar', 'aside', 'header', 'footer',
                 'banner', 'advertisement', 'ad', 'social', 'share', 'related',
                 'comments', 'pagination', 'breadcrumb', 'widget', 'toolbar',
-                'cookie', 'gdpr', 'consent', 'popup', 'modal', 'overlay'
+                'cookie', 'gdpr', 'consent', 'popup', 'modal', 'overlay',
+                'vpn', 'instance', 'spawn', 'target', 'download', 'connection'  # E-learning specific
             ]
             
             for pattern in exclude_patterns:
@@ -628,7 +651,8 @@ class DOMExtractor(BaseExtractor):
             
             # Positive indicators for TTS content
             positive_patterns = [
-                'content', 'article', 'post', 'story', 'main', 'body', 'text'
+                'content', 'article', 'post', 'story', 'main', 'body', 'text',
+                'training-module', 'lesson', 'chapter'  # E-learning specific
             ]
             
             for pattern in positive_patterns:
@@ -657,7 +681,7 @@ class PageAnalyzer:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
                 
-                # FIXED: Set user agent during context creation
+                # Set user agent during context creation
                 context = await browser.new_context(
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
                 )

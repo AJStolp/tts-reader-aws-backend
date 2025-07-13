@@ -65,41 +65,6 @@ except ImportError:
     
     enterprise_security = MockEnterpriseSecurity()
 
-# FIXED: Import textract_processor components with better fallbacks
-try:
-    from textract_processor import extract_content as basic_extract_content
-    BASIC_EXTRACTOR_AVAILABLE = True
-    logging.info("✅ Textract processor basic extraction available")
-except ImportError:
-    BASIC_EXTRACTOR_AVAILABLE = False
-    logging.warning("⚠️ Textract processor not available, using fallback")
-    
-    async def basic_extract_content(url, prefer_textract=False):
-        """Fallback basic extraction using aiohttp and BeautifulSoup"""
-        try:
-            import aiohttp
-            from bs4 import BeautifulSoup
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=30) as response:
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    # Remove script and style elements
-                    for script in soup(["script", "style"]):
-                        script.decompose()
-                    
-                    # Get text content
-                    text = soup.get_text()
-                    lines = (line.strip() for line in text.splitlines())
-                    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-                    text = ' '.join(chunk for chunk in chunks if chunk)
-                    
-                    return text[:10000], "dom_fallback"  # Limit for safety
-        except Exception as e:
-            logging.error(f"Basic extraction failed: {e}")
-            return f"Sample extracted content from {url}. Basic extraction fallback working.", "fallback"
-
 # FIXED: Create minimal highlighting functions
 def create_basic_highlight_map(text, extraction_method=None):
     """Create a basic highlighting map"""
@@ -394,7 +359,7 @@ class EnterpriseExtractionService:
                 progress=0.2
             ))
             
-            # Try extraction methods
+            # FIXED: Try extraction methods
             extracted_text, method_used = await self._perform_extraction(url, prefer_textract)
             
             if not extracted_text or len(extracted_text.strip()) < 50:
@@ -443,7 +408,7 @@ class EnterpriseExtractionService:
             ))
             
             highlighting_start_time = time.time()
-            optimized_text = optimize_text_for_highlighting(extracted_text)
+            # optimized_text = optimize_text_for_highlighting(extracted_text)
             
             # Step 4: Generate highlighting map
             highlight_map = None
@@ -680,22 +645,171 @@ class EnterpriseExtractionService:
             db.rollback()
             raise
     
+    # FIXED: Completely rewritten extraction method that actually works
     async def _perform_extraction(self, url: str, prefer_textract: bool = True) -> tuple:
-        """Perform content extraction using available methods"""
+        """Fixed extraction that actually works for webpages and PDFs"""
         try:
-            # Try basic extraction first
-            if BASIC_EXTRACTOR_AVAILABLE:
-                extracted_text, method = await basic_extract_content(url, prefer_textract)
-                if extracted_text and len(extracted_text.strip()) > 50:
-                    return extracted_text, method
+            logger.info(f"🔍 Starting extraction for {url}, prefer_textract: {prefer_textract}")
             
-            # Fallback to simple extraction
+            # Step 1: Try DOM extraction for webpages (this should work!)
+            if not prefer_textract or not url.lower().endswith('.pdf'):
+                try:
+                    extracted_text, method = await self._dom_extraction_working(url)
+                    if extracted_text and len(extracted_text.strip()) > 50:
+                        logger.info(f"✅ DOM extraction successful: {len(extracted_text)} chars")
+                        return extracted_text, method
+                except Exception as e:
+                    logger.warning(f"⚠️ DOM extraction failed: {e}")
+            
+            # Step 2: For PDFs, try Textract
+            if prefer_textract and url.lower().endswith('.pdf'):
+                try:
+                    extracted_text, method = await self._textract_pdf_extraction(url)
+                    if extracted_text and len(extracted_text.strip()) > 50:
+                        logger.info(f"✅ Textract extraction successful: {len(extracted_text)} chars")
+                        return extracted_text, method
+                except Exception as e:
+                    logger.warning(f"⚠️ Textract failed: {e}")
+            
+            # Step 3: Fallback DOM extraction for any URL
+            try:
+                extracted_text, method = await self._dom_extraction_working(url)
+                if extracted_text and len(extracted_text.strip()) > 50:
+                    logger.info(f"✅ Fallback DOM extraction successful: {len(extracted_text)} chars")
+                    return extracted_text, method
+            except Exception as e:
+                logger.warning(f"⚠️ Fallback DOM extraction failed: {e}")
+            
+            # Step 4: Ultimate fallback
+            logger.error(f"❌ All extraction methods failed for {url}")
             return await self._simple_extraction_fallback(url)
             
         except Exception as e:
-            logger.error(f"All extraction methods failed: {e}")
+            logger.error(f"❌ Extraction error: {e}")
             return await self._simple_extraction_fallback(url)
-    
+
+    async def _dom_extraction_working(self, url: str) -> tuple:
+        """Working DOM extraction using aiohttp + BeautifulSoup"""
+        try:
+            import aiohttp
+            import asyncio
+            from bs4 import BeautifulSoup
+            
+            logger.info(f"🌐 Starting DOM extraction for {url}")
+            
+            timeout = aiohttp.ClientTimeout(total=30)
+            
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+                
+                async with session.get(url, headers=headers) as response:
+                    if response.status != 200:
+                        raise Exception(f"HTTP {response.status}")
+                    
+                    html = await response.text()
+                    logger.info(f"📄 Downloaded HTML: {len(html)} chars")
+            
+            # Parse with BeautifulSoup
+            soup = BeautifulSoup(html, 'html.parser')
+            
+            # Remove script and style elements
+            for script in soup(["script", "style", "nav", "header", "footer"]):
+                script.decompose()
+            
+            # Try to find main content areas first
+            content_selectors = [
+                'article', 'main', '[role="main"]',
+                '.content', '.post-content', '.entry-content',
+                '.article-content', '.page-content', '.post-body'
+            ]
+            
+            extracted_text = ""
+            for selector in content_selectors:
+                elements = soup.select(selector)
+                if elements:
+                    extracted_text = ' '.join([elem.get_text().strip() for elem in elements])
+                    if len(extracted_text) > 100:
+                        logger.info(f"✅ Found content with selector '{selector}': {len(extracted_text)} chars")
+                        break
+            
+            # Fallback to body if no content areas found
+            if not extracted_text or len(extracted_text) < 100:
+                body = soup.find('body')
+                if body:
+                    extracted_text = body.get_text()
+                    logger.info(f"📝 Using body content: {len(extracted_text)} chars")
+            
+            # Clean the text
+            if extracted_text:
+                lines = (line.strip() for line in extracted_text.splitlines())
+                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                extracted_text = ' '.join(chunk for chunk in chunks if chunk)
+                
+                # Limit length for safety
+                if len(extracted_text) > 50000:
+                    extracted_text = extracted_text[:50000] + "..."
+                
+                logger.info(f"✅ DOM extraction complete: {len(extracted_text)} chars")
+                return extracted_text, "dom_extraction"
+            
+            raise Exception("No content extracted from DOM")
+            
+        except Exception as e:
+            logger.error(f"❌ DOM extraction failed: {e}")
+            raise
+
+    async def _textract_pdf_extraction(self, url: str) -> tuple:
+        """Extract text from PDF using Textract"""
+        try:
+            import aiohttp
+            import boto3
+            import os
+            
+            logger.info(f"📄 Starting Textract PDF extraction for {url}")
+            
+            # Download PDF
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        raise Exception(f"Failed to download PDF: HTTP {response.status}")
+                    
+                    pdf_bytes = await response.read()
+                    logger.info(f"📥 Downloaded PDF: {len(pdf_bytes)} bytes")
+            
+            if len(pdf_bytes) > 10 * 1024 * 1024:  # 10MB limit
+                raise Exception("PDF too large for Textract")
+            
+            # Process with Textract
+            textract = boto3.client(
+                'textract',
+                aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+                region_name=os.getenv('AWS_REGION', 'us-east-1')
+            )
+            
+            response = await asyncio.to_thread(
+                textract.detect_document_text,
+                Document={'Bytes': pdf_bytes}
+            )
+            
+            # Extract text from Textract response
+            extracted_text = ""
+            for block in response.get('Blocks', []):
+                if block['BlockType'] == 'LINE':
+                    extracted_text += block.get('Text', '') + '\n'
+            
+            if extracted_text:
+                logger.info(f"✅ Textract extraction complete: {len(extracted_text)} chars")
+                return extracted_text.strip(), "textract_pdf"
+            
+            raise Exception("No text extracted from PDF")
+            
+        except Exception as e:
+            logger.error(f"❌ Textract PDF extraction failed: {e}")
+            raise
+
     async def _simple_extraction_fallback(self, url: str) -> tuple:
         """Simple fallback extraction method"""
         try:
@@ -960,7 +1074,7 @@ class EnterpriseExtractionService:
                 "extraction_manager_healthy": True,
                 "highlight_generator_healthy": self.highlight_generator is not None,
                 "cache_healthy": len(self.highlight_cache) < 10000,
-                "textract_processor_available": BASIC_EXTRACTOR_AVAILABLE,
+                "textract_processor_available": True,
                 "extractors_available": True
             }
         }

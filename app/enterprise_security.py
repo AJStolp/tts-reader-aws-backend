@@ -1,9 +1,3 @@
-"""
-Enterprise Security Configuration Enhancement for TTS Deep Sight - FIXED FOR LOCALHOST
-Implements enterprise-grade security standards, audit logging, and compliance
-"""
-import hashlib
-import hmac
 import logging
 import secrets
 import time
@@ -60,7 +54,6 @@ class SecurityEvent:
         }
 
 class EnterpriseSecurityManager:
-    """Enterprise-grade security manager for TTS Deep Sight - FIXED FOR DEVELOPMENT"""
     
     def __init__(self):
         self.rate_limits: Dict[str, List[float]] = {}
@@ -177,7 +170,6 @@ class EnterpriseSecurityManager:
         content: Optional[str] = None,
         user_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Comprehensive request security validation - FIXED FOR LOCALHOST"""
         
         validation_result = {
             "allowed": True,
