@@ -106,15 +106,6 @@ async def enterprise_security_middleware(request: Request, call_next: Callable) 
     user_id = getattr(request.state, 'user_id', None)
     
     try:
-        # Handle CORS preflight requests immediately
-        if method == "OPTIONS":
-            response = Response()
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, X-Requested-With"
-            response.headers["Access-Control-Max-Age"] = "86400"
-            return response
-        
         # Skip security validation for health check, docs, and root
         if endpoint in ["/", "/docs", "/redoc", "/openapi.json", "/api/health"]:
             response = await call_next(request)
@@ -237,10 +228,7 @@ def create_app() -> FastAPI:
         }
     )
     
-    # Add enterprise security middleware FIRST (before CORS)
-    app.middleware("http")(enterprise_security_middleware)
-    
-    # Add CORS middleware with security-enhanced configuration
+    # Add CORS middleware FIRST (before custom middleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.ALLOWED_ORIGINS,
@@ -261,6 +249,9 @@ def create_app() -> FastAPI:
             "X-Rate-Limit-Reset"
         ]
     )
+    
+    # Add enterprise security middleware AFTER CORS
+    app.middleware("http")(enterprise_security_middleware)
     
     # Include routers with enhanced logging
     logger.info("📋 Registering API routers with enterprise security...")

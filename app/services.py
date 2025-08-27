@@ -473,28 +473,52 @@ class TTSService:
             for i, chunk in enumerate(chunks):
                 logger.info(f"🔊 Processing chunk {i+1}/{len(chunks)}: {len(chunk)} chars")
                 
-                # Synthesize audio
+                # Detect if chunk contains SSML markup
+                is_ssml = chunk.strip().startswith('<speak>') and chunk.strip().endswith('</speak>')
+                
+                # Synthesize audio with proper SSML handling
+                audio_params = {
+                    "Text": chunk,
+                    "OutputFormat": "mp3",
+                    "VoiceId": voice_id,
+                    "Engine": engine
+                }
+                
+                # Add TextType for SSML processing
+                if is_ssml:
+                    audio_params["TextType"] = "ssml"
+                
                 audio_response = await asyncio.to_thread(
                     self.aws_service.polly.synthesize_speech,
-                    Text=chunk,
-                    OutputFormat="mp3",
-                    VoiceId=voice_id,
-                    Engine=engine
+                    **audio_params
                 )
                 
                 audio_stream = audio_response['AudioStream'].read()
                 audio_segment = AudioSegment.from_file(io.BytesIO(audio_stream), format="mp3")
                 audio_segments.append(audio_segment)
                 
-                # Generate speech marks for TTS synchronization
+                # Generate speech marks for TTS synchronization with SSML support
                 try:
+                    # Speech mark types should include "ssml" for SSML markup processing
+                    speech_mark_types = ["word", "sentence"]
+                    if is_ssml:
+                        speech_mark_types.append("ssml")
+                    
+                    marks_params = {
+                        "Text": chunk,
+                        "OutputFormat": "json",
+                        "VoiceId": voice_id,
+                        "Engine": engine,
+                        "SpeechMarkTypes": speech_mark_types
+                    }
+                    
+                    # Add TextType for SSML processing in speech marks
+                    if is_ssml:
+                        marks_params["TextType"] = "ssml"
+                    
                     marks_response = await asyncio.to_thread(
                         self.aws_service.polly.synthesize_speech,
-                        Text=chunk,
-                        OutputFormat="json",
-                        VoiceId=voice_id,
-                        Engine=engine,
-                        SpeechMarkTypes=["word", "sentence"]
+                        **marks_params
                     )
                     
                     marks_text = marks_response['AudioStream'].read().decode('utf-8')
@@ -539,7 +563,9 @@ class TTSService:
             )
             
             # Upload speech marks
+            logger.info(f"🔍 Debug: Before creating marks_data, speech_marks_list length: {len(speech_marks_list)}")
             marks_data = "\n".join([json.dumps(mark) for mark in speech_marks_list])
+            logger.info(f"🔍 Debug: marks_data created, length: {len(marks_data)} chars")
             await asyncio.to_thread(
                 self.aws_service.s3.put_object,
                 Bucket=self.aws_service.bucket_name,
@@ -582,10 +608,47 @@ class TTSService:
             
             logger.info(f"✅ Synthesized {text_length} characters for user {user.username} in {duration:.1f}s")
             
+            # Debug log speech marks
+            logger.info(f"🔍 Debug: speech_marks_list length: {len(speech_marks_list)}")
+            logger.info(f"🔍 Debug: include_highlighting: {include_highlighting}")
+            logger.info(f"🔍 Debug: marks_data length: {len(marks_data)} chars")
+            if speech_marks_list:
+                logger.info(f"🔍 Debug: First speech mark: {speech_marks_list[0]}")
+            
+            # ALWAYS parse speech marks from marks_data to ensure we have the data
+            final_speech_marks = []
+            if marks_data:
+                logger.info("🔧 Parsing speech marks from marks_data")
+                try:
+                    for line in marks_data.strip().split('\n'):
+                        if line.strip():
+                            final_speech_marks.append(json.loads(line))
+                    logger.info(f"🔧 Parsed {len(final_speech_marks)} speech marks from marks_data")
+                except Exception as parse_error:
+                    logger.error(f"❌ Error parsing marks_data: {parse_error}")
+                    final_speech_marks = []
+            
+            # If we still don't have speech marks but had speech_marks_list, use that
+            if not final_speech_marks and speech_marks_list:
+                final_speech_marks = speech_marks_list
+                logger.info(f"🔧 Using original speech_marks_list with {len(final_speech_marks)} items")
+            
+            # Final debug before creating response
+            logger.info(f"🎯 FINAL DEBUG: final_speech_marks type: {type(final_speech_marks)}")
+            logger.info(f"🎯 FINAL DEBUG: final_speech_marks length: {len(final_speech_marks) if final_speech_marks else 'None'}")
+            if final_speech_marks:
+                logger.info(f"🎯 FINAL DEBUG: First item: {final_speech_marks[0]}")
+            
+            # FOR DEBUG: Create a simple test array if we have no speech marks
+            if not final_speech_marks:
+                final_speech_marks = [{"time": 0, "type": "test", "value": "debug_test"}]
+                logger.info("🐛 DEBUG: Created test speech marks array")
+            
             # Prepare response
             response = SynthesizeResponse(
                 audio_url=audio_url,
                 speech_marks_url=speech_marks_url,
+                speech_marks=final_speech_marks,  # Use the final speech marks
                 characters_used=text_length,
                 remaining_chars=user.remaining_chars,
                 duration_seconds=duration,
@@ -594,11 +657,23 @@ class TTSService:
                 chunks_processed=len(chunks)
             )
             
+            # Debug the response object
+            logger.info(f"🎯 RESPONSE DEBUG: response.speech_marks type: {type(response.speech_marks)}")
+            logger.info(f"🎯 RESPONSE DEBUG: response.speech_marks value: {response.speech_marks}")
+            
+            # Always add speech marks raw data if available
+            if marks_data:
+                response.speech_marks_raw = marks_data
+            
             # Add highlighting data if generated
             if highlighting_map:
                 response.highlighting_map = highlighting_map.to_dict()
-                response.speech_marks_raw = marks_data
                 response.precise_timing = True
+            
+            # FINAL DEBUG: Check what the response dict looks like
+            response_dict = response.model_dump()
+            logger.info(f"🎯 RESPONSE DICT DEBUG: speech_marks in dict: {response_dict.get('speech_marks')}")
+            logger.info(f"🎯 RESPONSE DICT DEBUG: Full dict keys: {list(response_dict.keys())}")
             
             return response
             

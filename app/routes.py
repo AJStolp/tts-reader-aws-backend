@@ -575,13 +575,17 @@ async def synthesize_text(
         if not text_content:
             raise HTTPException(status_code=400, detail="Text content is required")
         
+        # Always include highlighting/speech marks for debugging
+        include_speech_marks = getattr(request, 'include_speech_marks', True)  # Default to True
+        logger.info(f"🔍 Debug: Frontend requested include_speech_marks: {include_speech_marks}")
+        
         return await tts_service.synthesize_text(
             text_content, 
             request.voice_id, 
             request.engine, 
             current_user, 
             db,
-            include_highlighting=getattr(request, 'include_speech_marks', False)
+            include_highlighting=include_speech_marks
         )
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -655,9 +659,13 @@ async def update_preferences(
         raise HTTPException(status_code=500, detail="An error occurred while updating preferences")
 
 @user_router.get("/usage")
-async def get_usage(current_user: User = Depends(get_current_user)):
+async def get_usage(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """Get user TTS usage statistics with enhanced metrics"""
     try:
+        db.refresh(current_user)  # Force reload from DB to get latest values
         # Get basic usage stats from user model
         usage_stats = current_user.get_usage_stats()
         

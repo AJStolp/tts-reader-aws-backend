@@ -1,7 +1,3 @@
-"""
-FIXED highlighting.py - Advanced highlighting system for TTS content with speech synchronization
-Properly integrates with enhanced_calculations.py and frontend highlighting.ts
-"""
 import re
 import json
 import logging

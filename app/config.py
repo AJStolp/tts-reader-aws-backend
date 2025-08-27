@@ -44,8 +44,11 @@ class EnterpriseConfig(BaseSettings):
         "http://localhost:3001", 
         "http://127.0.0.1:3000",
         "http://127.0.0.1:3001",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
         "https://yourdomain.com",
-        "https://app.yourdomain.com"
+        "https://app.yourdomain.com",
+        "*" if os.getenv("DEVELOPMENT_MODE", "true").lower() == "true" else "https://yourdomain.com"
     ]
     
     # TTS Configuration
