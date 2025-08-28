@@ -111,7 +111,6 @@ class SynthesizeResponse(BaseModel):
     voice_used: Optional[str] = None
     engine_used: Optional[str] = None
     chunks_processed: Optional[int] = None
-    ssml_enhanced: Optional[bool] = None
     text_type: Optional[str] = None
     highlighting_map: Optional[Dict[str, Any]] = None
     speech_marks_raw: Optional[str] = None
