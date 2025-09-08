@@ -89,7 +89,7 @@ class SpeechMarkProcessor:
     
     @staticmethod
     def process_speech_marks(speech_marks: List[Dict[str, Any]], input_text: str) -> Dict[str, Any]:
-        """Process Polly speech marks, using clean text positions"""
+        """Process Polly speech marks with robust text alignment"""
         sentences = []
         words = []
         current_sentence = ""
@@ -99,16 +99,19 @@ class SpeechMarkProcessor:
         char_index = 0
 
         for mark in sorted(speech_marks, key=lambda x: x['time']):
-            clean_value = mark['value']
+            clean_value = mark['value'].strip()
             if not clean_value:
                 continue
 
+            # Try finding from char_index, fallback to entire text
             start_pos = clean_text.find(clean_value, char_index)
             if start_pos == -1:
-                logger.warning(f"Could not find '{clean_value}' in text at index {char_index}")
-                continue
+                start_pos = clean_text.find(clean_value)  # Search entire text
+                if start_pos == -1:
+                    logger.warning(f"Could not find '{clean_value}' in text at index {char_index}")
+                    continue
             end_pos = start_pos + len(clean_value)
-            char_index = end_pos
+            char_index = max(char_index, start_pos)  # Update index but don't overshoot
 
             if mark['type'] == 'sentence':
                 if current_sentence:
@@ -136,6 +139,7 @@ class SpeechMarkProcessor:
                     "end_time": mark.get('end_time', mark['time'] + 150)
                 })
 
+        # Finalize last sentence
         if current_sentence:
             clean_start = clean_text.find(current_sentence, sentence_start)
             if clean_start == -1:
@@ -149,6 +153,16 @@ class SpeechMarkProcessor:
                 "end_time": speech_marks[-1]['time'] if speech_marks else 0,
                 "word_count": len(current_sentence.split())
             })
+
+        # Validate positions
+        for seg in sentences:
+            if seg['end_char'] > len(clean_text) or seg['start_char'] < 0:
+                logger.warning(f"Invalid sentence position: {seg['text']} at {seg['start_char']}-{seg['end_char']}")
+                sentences.remove(seg)
+        for word in words:
+            if word['end_char'] > len(clean_text) or word['start_char'] < 0:
+                logger.warning(f"Invalid word position: {word['word']} at {word['start_char']}-{word['end_char']}")
+                words.remove(word)
 
         logger.info(f"[SpeechMarkProcessor] Processed {len(sentences)} sentences and {len(words)} words")
         logger.debug(f"[SpeechMarkProcessor] Clean text length: {len(clean_text)}")

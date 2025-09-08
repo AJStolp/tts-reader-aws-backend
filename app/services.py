@@ -22,7 +22,6 @@ from .models import (
     SynthesizeResponse, AnalyticsResponse
 )
 from textract_processor import ContentExtractorManager, extract_content
-from textract_processor.highlighting import create_basic_highlight_map, create_highlight_with_speech_marks
 from models import User
 
 logger = logging.getLogger(__name__)
@@ -257,50 +256,26 @@ class ExtractionService:
                 ))
                 raise ValueError(f"Text length ({text_length}) exceeds remaining character limit ({user.remaining_chars})")
             
-            self._update_progress(extraction_id, ExtractionProgress(
-                status="processing",
-                message="🎨 Generating TTS highlighting map...",
-                progress=0.9
-            ))
-            
-            try:
-                from textract_processor.highlighting import optimize_text_for_highlighting
-                optimized_text = optimize_text_for_highlighting(extracted_text)
-                highlight_map = create_basic_highlight_map(optimized_text, extraction_method=method)
-                
-                logger.info(f"✅ Generated highlighting with {len(highlight_map.segments)} segments")
-            except Exception as highlight_error:
-                logger.warning(f"⚠️ Could not generate highlighting: {highlight_error}")
-                optimized_text = extracted_text
-                highlight_map = None
-            
             db.commit()
             
             self._update_progress(extraction_id, ExtractionProgress(
                 status="completed",
-                message="🎉 TTS content extraction completed successfully",
+                message="✅ Content extraction completed successfully",
                 progress=1.0,
                 method=method
             ))
             
-            logger.info(f"✅ Enhanced extraction completed for user {user.username}: "
+            logger.info(f"✅ Extraction completed for user {user.username}: "
                        f"{text_length} characters using {method} in {processing_time:.2f}s")
             
             response_data = {
-                "text": optimized_text,
+                "text": extracted_text,
                 "characters_used": text_length,
                 "remaining_chars": user.remaining_chars,
                 "extraction_method": method,
-                "word_count": len(optimized_text.split()),
-                "processing_time": processing_time,
-                "tts_optimized": True,
-                "highlighting_available": highlight_map is not None
+                "word_count": len(extracted_text.split()),
+                "processing_time": processing_time
             }
-            
-            if highlight_map:
-                response_data["highlighting_map"] = highlight_map.to_dict()
-                response_data["segment_count"] = len(highlight_map.segments)
-                response_data["estimated_reading_time"] = highlight_map.total_duration / 1000 / 60
             
             if include_metadata:
                 response_data["metadata"] = {
@@ -418,10 +393,9 @@ class TTSService:
         voice_id: str, 
         engine: str, 
         user: User, 
-        db: Session,
-        include_highlighting: bool = False
+        db: Session
     ) -> SynthesizeResponse:
-        """🎤 Synthesize text to speech using Amazon Polly with TTS highlighting"""
+        """Synthesize text to speech using Amazon Polly with clean speech marks"""
         text_length = len(text)
         
         if not user.deduct_characters(text_length):
@@ -430,13 +404,10 @@ class TTSService:
         try:
             logger.info(f"🎤 Starting TTS synthesis for user {user.username}: {text_length} chars with {voice_id}/{engine}")
             
-            from textract_processor.highlighting import optimize_text_for_highlighting
-            optimized_text = optimize_text_for_highlighting(text)
-            
-            chunks = self.aws_service.split_text_smart(optimized_text)
+            chunks = self.aws_service.split_text_smart(text)
             audio_segments = []
             speech_marks_list = []
-            cumulative_time = 0.0
+            cumulative_time_ms = 0
             
             for i, chunk in enumerate(chunks):
                 logger.info(f"🔊 Processing chunk {i+1}/{len(chunks)}: {len(chunk)} chars")
@@ -457,32 +428,27 @@ class TTSService:
                 audio_segment = AudioSegment.from_file(io.BytesIO(audio_stream), format="mp3")
                 audio_segments.append(audio_segment)
                 
-                try:
-                    marks_params = {
-                        "Text": chunk,
-                        "OutputFormat": "json",
-                        "VoiceId": voice_id,
-                        "Engine": engine,
-                        "SpeechMarkTypes": ["word", "sentence"]
-                    }
-                    
-                    marks_response = await asyncio.to_thread(
-                        self.aws_service.polly.synthesize_speech,
-                        **marks_params
-                    )
-                    
-                    marks_text = marks_response['AudioStream'].read().decode('utf-8')
-                    chunk_marks = [json.loads(line) for line in marks_text.splitlines() if line.strip()]
-                    
-                    for mark in chunk_marks:
-                        mark['time'] += int(cumulative_time * 1000)
-                    
-                    speech_marks_list.extend(chunk_marks)
-                    
-                except Exception as marks_error:
-                    logger.warning(f"⚠️ Could not generate speech marks for chunk {i+1}: {marks_error}")
+                marks_params = {
+                    "Text": chunk,
+                    "OutputFormat": "json",
+                    "VoiceId": voice_id,
+                    "Engine": engine,
+                    "SpeechMarkTypes": ["word", "sentence"]
+                }
                 
-                cumulative_time += len(audio_segment) / 1000.0
+                marks_response = await asyncio.to_thread(
+                    self.aws_service.polly.synthesize_speech,
+                    **marks_params
+                )
+                
+                marks_text = marks_response['AudioStream'].read().decode('utf-8')
+                chunk_marks = [json.loads(line) for line in marks_text.splitlines() if line.strip()]
+                
+                for mark in chunk_marks:
+                    mark['time'] += cumulative_time_ms
+                
+                speech_marks_list.extend(chunk_marks)
+                cumulative_time_ms += int(len(audio_segment))
             
             combined_audio = sum(audio_segments)
             audio_buffer = io.BytesIO()
@@ -491,7 +457,6 @@ class TTSService:
             
             timestamp = int(time.time())
             audio_key = f"users/{user.user_id}/audio/{timestamp}.mp3"
-            marks_key = f"users/{user.user_id}/speech_marks/{timestamp}.json"
             
             await asyncio.to_thread(
                 self.aws_service.s3.put_object,
@@ -503,18 +468,8 @@ class TTSService:
                     "user_id": str(user.user_id),
                     "voice_id": voice_id,
                     "engine": engine,
-                    "text_length": str(text_length),
-                    "chunks": str(len(chunks))
+                    "text_length": str(text_length)
                 }
-            )
-            
-            marks_data = "\n".join([json.dumps(mark) for mark in speech_marks_list])
-            await asyncio.to_thread(
-                self.aws_service.s3.put_object,
-                Bucket=self.aws_service.bucket_name,
-                Key=marks_key,
-                Body=marks_data,
-                ContentType="application/json"
             )
             
             audio_url = self.aws_service.s3.generate_presigned_url(
@@ -523,55 +478,21 @@ class TTSService:
                 ExpiresIn=3600
             )
             
-            speech_marks_url = self.aws_service.s3.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": self.aws_service.bucket_name, "Key": marks_key},
-                ExpiresIn=3600
-            )
-            
-            highlighting_map = None
-            if include_highlighting and speech_marks_list:
-                try:
-                    highlighting_map = create_highlight_with_speech_marks(
-                        optimized_text,
-                        speech_marks_list
-                    )
-                    logger.info(f"✅ Generated highlighting with {len(highlighting_map.segments)} segments")
-                except Exception as highlight_error:
-                    logger.warning(f"⚠️ Could not generate highlighting: {highlight_error}")
-                    highlighting_map = create_basic_highlight_map(optimized_text, "polly_synthesis_fallback")
-            
             db.commit()
             
             duration = len(combined_audio) / 1000.0
             
             logger.info(f"✅ Synthesized {text_length} characters for user {user.username} in {duration:.1f}s")
             
-            final_speech_marks = speech_marks_list
-            if not final_speech_marks:
-                final_speech_marks = [{"time": 0, "type": "test", "value": "debug_test"}]
-                logger.info("🐛 DEBUG: Created test speech marks array")
-            
-            response = SynthesizeResponse(
+            return SynthesizeResponse(
                 audio_url=audio_url,
-                speech_marks_url=speech_marks_url,
-                speech_marks=final_speech_marks,
+                speech_marks=speech_marks_list,
                 characters_used=text_length,
                 remaining_chars=user.remaining_chars,
                 duration_seconds=duration,
                 voice_used=voice_id,
-                engine_used=engine,
-                chunks_processed=len(chunks)
+                engine_used=engine
             )
-            
-            if marks_data:
-                response.speech_marks_raw = marks_data
-            
-            if highlighting_map:
-                response.highlighting_map = highlighting_map.to_dict()
-                response.precise_timing = True
-            
-            return response
             
         except Exception as e:
             logger.error(f"❌ Synthesis error for user {user.username}: {str(e)}")
@@ -644,16 +565,15 @@ class StripeService:
         return {"status": "success"}
 
 class AnalyticsService:
-    """Service for analytics and reporting - Enhanced for TTS"""
+    """Service for analytics and reporting"""
     
     def get_extraction_analytics(self, days: int = 7) -> AnalyticsResponse:
-        """Get TTS extraction analytics"""
+        """Get extraction analytics"""
         return AnalyticsResponse(
             period_days=days,
             total_extractions=142,
             total_characters=425000,
             average_extraction_time=2.8,
-            tts_optimized_extractions=138,
             methods_used={
                 "textract": 85,
                 "dom_semantic": 32,
@@ -675,63 +595,45 @@ class AnalyticsService:
                 "documentation": 28,
                 "news": 12,
                 "academic": 6
-            },
-            highlighting_success_rate=0.94,
-            average_segments_per_extraction=24,
-            speech_marks_generated=89,
-            total_audio_duration_minutes=1847
+            }
         )
     
     def get_extraction_methods(self) -> Dict[str, Any]:
-        """Get available extraction methods and their TTS capabilities"""
-        from textract_processor import health_check
-        
+        """Get available extraction methods"""
         methods = [
             {
                 "id": "textract",
                 "name": "AWS Textract OCR",
-                "description": "High-accuracy OCR with layout analysis - best for TTS quality",
+                "description": "High-accuracy OCR with layout analysis",
                 "speed": "medium",
                 "accuracy": "very-high",
-                "tts_optimized": True,
-                "highlighting_support": True,
-                "speech_marks_compatible": True,
                 "available": True,
-                "recommended_for": ["PDFs", "complex layouts", "high-quality TTS"]
+                "recommended_for": ["PDFs", "complex layouts"]
             },
             {
                 "id": "dom_semantic",
                 "name": "DOM Semantic",
-                "description": "Extract using semantic HTML elements - excellent for TTS",
+                "description": "Extract using semantic HTML elements",
                 "speed": "fast",
                 "accuracy": "high",
-                "tts_optimized": True,
-                "highlighting_support": True,
-                "speech_marks_compatible": True,
                 "available": True,
                 "recommended_for": ["well-structured websites", "articles", "blogs"]
             },
             {
                 "id": "dom_heuristic", 
                 "name": "DOM Heuristic",
-                "description": "Content analysis algorithms - good TTS results",
+                "description": "Content analysis algorithms",
                 "speed": "fast",
                 "accuracy": "medium-high",
-                "tts_optimized": True,
-                "highlighting_support": True,
-                "speech_marks_compatible": True,
                 "available": True,
                 "recommended_for": ["dynamic content", "mixed layouts"]
             },
             {
                 "id": "reader_mode",
                 "name": "Reader Mode",
-                "description": "Clean content extraction - optimized for TTS reading",
+                "description": "Clean content extraction",
                 "speed": "fast",
                 "accuracy": "medium",
-                "tts_optimized": True,
-                "highlighting_support": True,
-                "speech_marks_compatible": True,
                 "available": True,
                 "recommended_for": ["cluttered pages", "news sites"]
             }
@@ -739,16 +641,13 @@ class AnalyticsService:
         
         return {
             "methods": methods,
-            "default_strategy": "intelligent_fallback_tts_optimized",
+            "default_strategy": "intelligent_fallback",
             "health_status": {"status": "healthy"},
-            "service_type": "TTS Content Extraction with Advanced Highlighting",
+            "service_type": "Content Extraction with TTS",
             "features": {
                 "content_extraction": True,
-                "highlighting": True,
-                "speech_marks": True,
-                "real_time_progress": True,
-                "chunk_processing": True,
-                "quality_analysis": True
+                "speech_synthesis": True,
+                "real_time_progress": True
             }
         }
 
