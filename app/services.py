@@ -22,7 +22,6 @@ from .models import (
     SynthesizeResponse, AnalyticsResponse
 )
 from textract_processor import ContentExtractorManager, extract_content
-from textract_processor.highlighting import create_basic_highlight_map, create_highlight_with_speech_marks
 from models import User
 
 logger = logging.getLogger(__name__)
@@ -49,7 +48,6 @@ class AWSService:
             self.s3 = self.session.client("s3")
             self.polly = self.session.client("polly")
             
-            # Test AWS credentials
             self.s3.list_buckets()
             self.polly.describe_voices(LanguageCode="en-US")
             
@@ -62,13 +60,11 @@ class AWSService:
     async def setup_bucket(self):
         """Setup S3 bucket with proper configuration for TTS files"""
         try:
-            # Check if bucket exists
             self.s3.head_bucket(Bucket=self.bucket_name)
             logger.info(f"✅ Bucket {self.bucket_name} already exists")
         except ClientError as e:
             error_code = int(e.response["Error"]["Code"])
             if error_code == 404:
-                # Create bucket
                 try:
                     if config.AWS_REGION == "us-east-1":
                         self.s3.create_bucket(Bucket=self.bucket_name)
@@ -80,7 +76,6 @@ class AWSService:
                             }
                         )
                     
-                    # Configure bucket security
                     self.s3.put_public_access_block(
                         Bucket=self.bucket_name,
                         PublicAccessBlockConfiguration={
@@ -91,13 +86,11 @@ class AWSService:
                         }
                     )
                     
-                    # Enable versioning
                     self.s3.put_bucket_versioning(
                         Bucket=self.bucket_name,
                         VersioningConfiguration={"Status": "Enabled"}
                     )
                     
-                    # Add lifecycle configuration for TTS files
                     self.s3.put_bucket_lifecycle_configuration(
                         Bucket=self.bucket_name,
                         LifecycleConfiguration={
@@ -127,13 +120,11 @@ class AWSService:
         if len(text) <= max_length:
             return [text]
         
-        # Enhanced splitting for TTS - preserve sentence flow
         sentences = text.replace('\n', ' ').split('. ')
         chunks = []
         current_chunk = ""
         
         for sentence in sentences:
-            # Clean up sentence
             sentence = sentence.strip()
             if not sentence:
                 continue
@@ -159,7 +150,6 @@ class AWSService:
                 LanguageCode="en-US"
             )
             
-            # Group voices by supported engines
             standard_voices = []
             neural_voices = []
             long_form_voices = []
@@ -174,7 +164,6 @@ class AWSService:
                     "supports_speech_marks": True
                 }
                 
-                # Check which engines this voice supports
                 supported_engines = voice["SupportedEngines"]
                 
                 if "standard" in supported_engines:
@@ -183,7 +172,6 @@ class AWSService:
                 if "neural" in supported_engines:
                     neural_voices.append({**voice_data, "quality": "high"})
                 
-                # Check for long-form support (newer Polly feature)
                 if "long-form" in supported_engines:
                     long_form_voices.append({**voice_data, "quality": "premium"})
             
@@ -200,7 +188,6 @@ class AWSService:
             logger.error(f"❌ Error fetching voices: {str(e)}")
             raise
 
-# Global AWS service instance
 aws_service = AWSService()
 
 class ExtractionService:
@@ -224,7 +211,6 @@ class ExtractionService:
         try:
             logger.info(f"🚀 Enhanced extraction request from user {user.username}: {url}")
             
-            # Initialize progress tracking
             self.extraction_progress[extraction_id] = [
                 ExtractionProgress(
                     status="starting",
@@ -233,14 +219,12 @@ class ExtractionService:
                 )
             ]
             
-            # Update progress
             self._update_progress(extraction_id, ExtractionProgress(
                 status="processing",
                 message="📄 Analyzing webpage and extracting TTS-optimized content...",
                 progress=0.3
             ))
             
-            # Perform extraction
             start_time = time.time()
             extracted_text, method = await self.extraction_manager.extract_content(
                 url, prefer_textract=prefer_textract
@@ -257,7 +241,6 @@ class ExtractionService:
             
             text_length = len(extracted_text)
             
-            # Update progress
             self._update_progress(extraction_id, ExtractionProgress(
                 status="processing",
                 message="✅ Validating extracted TTS content...",
@@ -265,7 +248,6 @@ class ExtractionService:
                 method=method
             ))
             
-            # Check character limits
             if not user.deduct_characters(text_length):
                 self._update_progress(extraction_id, ExtractionProgress(
                     status="failed",
@@ -274,57 +256,27 @@ class ExtractionService:
                 ))
                 raise ValueError(f"Text length ({text_length}) exceeds remaining character limit ({user.remaining_chars})")
             
-            # Create basic highlighting for TTS
-            self._update_progress(extraction_id, ExtractionProgress(
-                status="processing",
-                message="🎨 Generating TTS highlighting map...",
-                progress=0.9
-            ))
-            
-            try:
-                from textract_processor.highlighting import optimize_text_for_highlighting
-                optimized_text = optimize_text_for_highlighting(extracted_text)
-                highlight_map = create_basic_highlight_map(optimized_text, extraction_method=method)
-                
-                logger.info(f"✅ Generated highlighting with {len(highlight_map.segments)} segments")
-            except Exception as highlight_error:
-                logger.warning(f"⚠️ Could not generate highlighting: {highlight_error}")
-                optimized_text = extracted_text
-                highlight_map = None
-            
-            # Commit the character deduction
             db.commit()
             
-            # Update progress
             self._update_progress(extraction_id, ExtractionProgress(
                 status="completed",
-                message="🎉 TTS content extraction completed successfully",
+                message="✅ Content extraction completed successfully",
                 progress=1.0,
                 method=method
             ))
             
-            logger.info(f"✅ Enhanced extraction completed for user {user.username}: "
+            logger.info(f"✅ Extraction completed for user {user.username}: "
                        f"{text_length} characters using {method} in {processing_time:.2f}s")
             
-            # Prepare response with TTS enhancements
             response_data = {
-                "text": optimized_text,
+                "text": extracted_text,
                 "characters_used": text_length,
                 "remaining_chars": user.remaining_chars,
                 "extraction_method": method,
-                "word_count": len(optimized_text.split()),
-                "processing_time": processing_time,
-                "tts_optimized": True,
-                "highlighting_available": highlight_map is not None
+                "word_count": len(extracted_text.split()),
+                "processing_time": processing_time
             }
             
-            # Add highlighting data if available
-            if highlight_map:
-                response_data["highlighting_map"] = highlight_map.to_dict()
-                response_data["segment_count"] = len(highlight_map.segments)
-                response_data["estimated_reading_time"] = highlight_map.total_duration / 1000 / 60
-            
-            # Add metadata if requested
             if include_metadata:
                 response_data["metadata"] = {
                     "url": url,
@@ -335,7 +287,6 @@ class ExtractionService:
                     "optimized_for_tts": True
                 }
             
-            # Clean up progress data
             self._cleanup_progress_data()
             
             return ExtractResponseEnhanced(**response_data)
@@ -357,18 +308,15 @@ class ExtractionService:
         try:
             logger.info(f"📋 Preview extraction request: {url}")
             
-            # Perform extraction
             extracted_text, method = await extract_content(url)
             
             if not extracted_text:
                 raise ValueError("Could not extract content from the provided URL")
             
-            # Create preview (first 500 characters)
             preview = extracted_text[:500]
             if len(extracted_text) > 500:
                 preview += "..."
             
-            # Estimate confidence based on extraction method
             confidence_map = {
                 "textract": 0.9,
                 "dom_semantic": 0.8,
@@ -379,9 +327,8 @@ class ExtractionService:
             
             confidence = confidence_map.get(method, 0.5)
             
-            # Estimate TTS reading time
             word_count = len(extracted_text.split())
-            estimated_minutes = word_count / 150  # Average reading speed
+            estimated_minutes = word_count / 150
             
             return ExtractionPreview(
                 preview=preview,
@@ -411,7 +358,7 @@ class ExtractionService:
             "current_message": latest_progress.message if latest_progress else "No progress data",
             "progress": latest_progress.progress if latest_progress else 0.0,
             "method": latest_progress.method if latest_progress else None,
-            "history": [p.dict() for p in progress_list[-5:]]  # Last 5 progress updates
+            "history": [p.dict() for p in progress_list[-5:]]
         }
     
     def _update_progress(self, extraction_id: str, progress: ExtractionProgress):
@@ -422,14 +369,12 @@ class ExtractionService:
     def _cleanup_progress_data(self):
         """Clean up old progress data to prevent memory leaks"""
         if len(self.extraction_progress) > 100:
-            # Sort by the latest timestamp and keep the most recent
             sorted_keys = sorted(
                 self.extraction_progress.keys(),
                 key=lambda k: self.extraction_progress[k][-1].timestamp if self.extraction_progress[k] else datetime.min,
                 reverse=True
             )
             
-            # Keep only the latest 50
             keys_to_keep = sorted_keys[:50]
             keys_to_remove = [k for k in self.extraction_progress.keys() if k not in keys_to_keep]
             
@@ -448,10 +393,9 @@ class TTSService:
         voice_id: str, 
         engine: str, 
         user: User, 
-        db: Session,
-        include_highlighting: bool = False
+        db: Session
     ) -> SynthesizeResponse:
-        """🎤 Synthesize text to speech using Amazon Polly with TTS highlighting"""
+        """Synthesize text to speech using Amazon Polly with clean speech marks"""
         text_length = len(text)
         
         if not user.deduct_characters(text_length):
@@ -460,33 +404,20 @@ class TTSService:
         try:
             logger.info(f"🎤 Starting TTS synthesis for user {user.username}: {text_length} chars with {voice_id}/{engine}")
             
-            # Optimize text for TTS
-            from textract_processor.highlighting import optimize_text_for_highlighting
-            optimized_text = optimize_text_for_highlighting(text)
-            
-            # Split text into chunks optimized for TTS
-            chunks = self.aws_service.split_text_smart(optimized_text)
+            chunks = self.aws_service.split_text_smart(text)
             audio_segments = []
             speech_marks_list = []
-            cumulative_time = 0.0
+            cumulative_time_ms = 0
             
             for i, chunk in enumerate(chunks):
                 logger.info(f"🔊 Processing chunk {i+1}/{len(chunks)}: {len(chunk)} chars")
                 
-                # Detect if chunk contains SSML markup
-                is_ssml = chunk.strip().startswith('<speak>') and chunk.strip().endswith('</speak>')
-                
-                # Synthesize audio with proper SSML handling
                 audio_params = {
                     "Text": chunk,
                     "OutputFormat": "mp3",
                     "VoiceId": voice_id,
                     "Engine": engine
                 }
-                
-                # Add TextType for SSML processing
-                if is_ssml:
-                    audio_params["TextType"] = "ssml"
                 
                 audio_response = await asyncio.to_thread(
                     self.aws_service.polly.synthesize_speech,
@@ -497,56 +428,36 @@ class TTSService:
                 audio_segment = AudioSegment.from_file(io.BytesIO(audio_stream), format="mp3")
                 audio_segments.append(audio_segment)
                 
-                # Generate speech marks for TTS synchronization with SSML support
-                try:
-                    # Speech mark types should include "ssml" for SSML markup processing
-                    speech_mark_types = ["word", "sentence"]
-                    if is_ssml:
-                        speech_mark_types.append("ssml")
-                    
-                    marks_params = {
-                        "Text": chunk,
-                        "OutputFormat": "json",
-                        "VoiceId": voice_id,
-                        "Engine": engine,
-                        "SpeechMarkTypes": speech_mark_types
-                    }
-                    
-                    # Add TextType for SSML processing in speech marks
-                    if is_ssml:
-                        marks_params["TextType"] = "ssml"
-                    
-                    marks_response = await asyncio.to_thread(
-                        self.aws_service.polly.synthesize_speech,
-                        **marks_params
-                    )
-                    
-                    marks_text = marks_response['AudioStream'].read().decode('utf-8')
-                    chunk_marks = [json.loads(line) for line in marks_text.splitlines() if line.strip()]
-                    
-                    # Adjust timing for concatenated audio
-                    for mark in chunk_marks:
-                        mark['time'] += int(cumulative_time * 1000)
-                    
-                    speech_marks_list.extend(chunk_marks)
-                    
-                except Exception as marks_error:
-                    logger.warning(f"⚠️ Could not generate speech marks for chunk {i+1}: {marks_error}")
+                marks_params = {
+                    "Text": chunk,
+                    "OutputFormat": "json",
+                    "VoiceId": voice_id,
+                    "Engine": engine,
+                    "SpeechMarkTypes": ["word", "sentence"]
+                }
                 
-                cumulative_time += len(audio_segment) / 1000.0
+                marks_response = await asyncio.to_thread(
+                    self.aws_service.polly.synthesize_speech,
+                    **marks_params
+                )
+                
+                marks_text = marks_response['AudioStream'].read().decode('utf-8')
+                chunk_marks = [json.loads(line) for line in marks_text.splitlines() if line.strip()]
+                
+                for mark in chunk_marks:
+                    mark['time'] += cumulative_time_ms
+                
+                speech_marks_list.extend(chunk_marks)
+                cumulative_time_ms += int(len(audio_segment))
             
-            # Combine audio segments
             combined_audio = sum(audio_segments)
             audio_buffer = io.BytesIO()
             combined_audio.export(audio_buffer, format="mp3")
             audio_bytes = audio_buffer.getvalue()
             
-            # Upload to S3
             timestamp = int(time.time())
             audio_key = f"users/{user.user_id}/audio/{timestamp}.mp3"
-            marks_key = f"users/{user.user_id}/speech_marks/{timestamp}.json"
             
-            # Upload audio file
             await asyncio.to_thread(
                 self.aws_service.s3.put_object,
                 Bucket=self.aws_service.bucket_name,
@@ -557,125 +468,31 @@ class TTSService:
                     "user_id": str(user.user_id),
                     "voice_id": voice_id,
                     "engine": engine,
-                    "text_length": str(text_length),
-                    "chunks": str(len(chunks))
+                    "text_length": str(text_length)
                 }
             )
             
-            # Upload speech marks
-            logger.info(f"🔍 Debug: Before creating marks_data, speech_marks_list length: {len(speech_marks_list)}")
-            marks_data = "\n".join([json.dumps(mark) for mark in speech_marks_list])
-            logger.info(f"🔍 Debug: marks_data created, length: {len(marks_data)} chars")
-            await asyncio.to_thread(
-                self.aws_service.s3.put_object,
-                Bucket=self.aws_service.bucket_name,
-                Key=marks_key,
-                Body=marks_data,
-                ContentType="application/json"
-            )
-            
-            # Generate presigned URLs
             audio_url = self.aws_service.s3.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.aws_service.bucket_name, "Key": audio_key},
                 ExpiresIn=3600
             )
             
-            speech_marks_url = self.aws_service.s3.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": self.aws_service.bucket_name, "Key": marks_key},
-                ExpiresIn=3600
-            )
-            
-            # Generate highlighting if requested
-            highlighting_map = None
-            if include_highlighting and speech_marks_list:
-                try:
-                    highlighting_map = create_highlight_with_speech_marks(
-                        optimized_text,
-                        marks_data,
-                        extraction_method="polly_synthesis"
-                    )
-                    logger.info(f"✅ Generated highlighting with {len(highlighting_map.segments)} segments")
-                except Exception as highlight_error:
-                    logger.warning(f"⚠️ Could not generate highlighting: {highlight_error}")
-                    highlighting_map = create_basic_highlight_map(optimized_text, "polly_synthesis_fallback")
-            
-            # Commit the character deduction
             db.commit()
             
             duration = len(combined_audio) / 1000.0
             
             logger.info(f"✅ Synthesized {text_length} characters for user {user.username} in {duration:.1f}s")
             
-            # Debug log speech marks
-            logger.info(f"🔍 Debug: speech_marks_list length: {len(speech_marks_list)}")
-            logger.info(f"🔍 Debug: include_highlighting: {include_highlighting}")
-            logger.info(f"🔍 Debug: marks_data length: {len(marks_data)} chars")
-            if speech_marks_list:
-                logger.info(f"🔍 Debug: First speech mark: {speech_marks_list[0]}")
-            
-            # ALWAYS parse speech marks from marks_data to ensure we have the data
-            final_speech_marks = []
-            if marks_data:
-                logger.info("🔧 Parsing speech marks from marks_data")
-                try:
-                    for line in marks_data.strip().split('\n'):
-                        if line.strip():
-                            final_speech_marks.append(json.loads(line))
-                    logger.info(f"🔧 Parsed {len(final_speech_marks)} speech marks from marks_data")
-                except Exception as parse_error:
-                    logger.error(f"❌ Error parsing marks_data: {parse_error}")
-                    final_speech_marks = []
-            
-            # If we still don't have speech marks but had speech_marks_list, use that
-            if not final_speech_marks and speech_marks_list:
-                final_speech_marks = speech_marks_list
-                logger.info(f"🔧 Using original speech_marks_list with {len(final_speech_marks)} items")
-            
-            # Final debug before creating response
-            logger.info(f"🎯 FINAL DEBUG: final_speech_marks type: {type(final_speech_marks)}")
-            logger.info(f"🎯 FINAL DEBUG: final_speech_marks length: {len(final_speech_marks) if final_speech_marks else 'None'}")
-            if final_speech_marks:
-                logger.info(f"🎯 FINAL DEBUG: First item: {final_speech_marks[0]}")
-            
-            # FOR DEBUG: Create a simple test array if we have no speech marks
-            if not final_speech_marks:
-                final_speech_marks = [{"time": 0, "type": "test", "value": "debug_test"}]
-                logger.info("🐛 DEBUG: Created test speech marks array")
-            
-            # Prepare response
-            response = SynthesizeResponse(
+            return SynthesizeResponse(
                 audio_url=audio_url,
-                speech_marks_url=speech_marks_url,
-                speech_marks=final_speech_marks,  # Use the final speech marks
+                speech_marks=speech_marks_list,
                 characters_used=text_length,
                 remaining_chars=user.remaining_chars,
                 duration_seconds=duration,
                 voice_used=voice_id,
-                engine_used=engine,
-                chunks_processed=len(chunks)
+                engine_used=engine
             )
-            
-            # Debug the response object
-            logger.info(f"🎯 RESPONSE DEBUG: response.speech_marks type: {type(response.speech_marks)}")
-            logger.info(f"🎯 RESPONSE DEBUG: response.speech_marks value: {response.speech_marks}")
-            
-            # Always add speech marks raw data if available
-            if marks_data:
-                response.speech_marks_raw = marks_data
-            
-            # Add highlighting data if generated
-            if highlighting_map:
-                response.highlighting_map = highlighting_map.to_dict()
-                response.precise_timing = True
-            
-            # FINAL DEBUG: Check what the response dict looks like
-            response_dict = response.model_dump()
-            logger.info(f"🎯 RESPONSE DICT DEBUG: speech_marks in dict: {response_dict.get('speech_marks')}")
-            logger.info(f"🎯 RESPONSE DICT DEBUG: Full dict keys: {list(response_dict.keys())}")
-            
-            return response
             
         except Exception as e:
             logger.error(f"❌ Synthesis error for user {user.username}: {str(e)}")
@@ -726,7 +543,6 @@ class StripeService:
             logger.error("❌ Invalid signature in Stripe webhook")
             raise ValueError("Invalid signature")
 
-        # Handle the event
         if event["type"] == "checkout.session.completed":
             session = event["data"]["object"]
             username = session["client_reference_id"]
@@ -740,7 +556,6 @@ class StripeService:
 
         elif event["type"] == "customer.subscription.deleted":
             subscription = event["data"]["object"]
-            # Find user by subscription ID and remove it
             user = db.query(User).filter(User.stripe_subscription_id == subscription["id"]).first()
             if user:
                 user.stripe_subscription_id = None
@@ -750,19 +565,15 @@ class StripeService:
         return {"status": "success"}
 
 class AnalyticsService:
-    """Service for analytics and reporting - Enhanced for TTS"""
+    """Service for analytics and reporting"""
     
     def get_extraction_analytics(self, days: int = 7) -> AnalyticsResponse:
-        """Get TTS extraction analytics"""
-        # In a real implementation, you'd query your database for extraction history
-        # For now, return enhanced mock data with TTS metrics
-        
+        """Get extraction analytics"""
         return AnalyticsResponse(
             period_days=days,
             total_extractions=142,
             total_characters=425000,
             average_extraction_time=2.8,
-            tts_optimized_extractions=138,
             methods_used={
                 "textract": 85,
                 "dom_semantic": 32,
@@ -784,64 +595,45 @@ class AnalyticsService:
                 "documentation": 28,
                 "news": 12,
                 "academic": 6
-            },
-            # TTS-specific metrics
-            highlighting_success_rate=0.94,
-            average_segments_per_extraction=24,
-            speech_marks_generated=89,
-            total_audio_duration_minutes=1847
+            }
         )
     
     def get_extraction_methods(self) -> Dict[str, Any]:
-        """Get available extraction methods and their TTS capabilities"""
-        from textract_processor import health_check
-        
+        """Get available extraction methods"""
         methods = [
             {
                 "id": "textract",
                 "name": "AWS Textract OCR",
-                "description": "High-accuracy OCR with layout analysis - best for TTS quality",
+                "description": "High-accuracy OCR with layout analysis",
                 "speed": "medium",
                 "accuracy": "very-high",
-                "tts_optimized": True,
-                "highlighting_support": True,
-                "speech_marks_compatible": True,
                 "available": True,
-                "recommended_for": ["PDFs", "complex layouts", "high-quality TTS"]
+                "recommended_for": ["PDFs", "complex layouts"]
             },
             {
                 "id": "dom_semantic",
                 "name": "DOM Semantic",
-                "description": "Extract using semantic HTML elements - excellent for TTS",
+                "description": "Extract using semantic HTML elements",
                 "speed": "fast",
                 "accuracy": "high",
-                "tts_optimized": True,
-                "highlighting_support": True,
-                "speech_marks_compatible": True,
                 "available": True,
                 "recommended_for": ["well-structured websites", "articles", "blogs"]
             },
             {
                 "id": "dom_heuristic", 
                 "name": "DOM Heuristic",
-                "description": "Content analysis algorithms - good TTS results",
+                "description": "Content analysis algorithms",
                 "speed": "fast",
                 "accuracy": "medium-high",
-                "tts_optimized": True,
-                "highlighting_support": True,
-                "speech_marks_compatible": True,
                 "available": True,
                 "recommended_for": ["dynamic content", "mixed layouts"]
             },
             {
                 "id": "reader_mode",
                 "name": "Reader Mode",
-                "description": "Clean content extraction - optimized for TTS reading",
+                "description": "Clean content extraction",
                 "speed": "fast",
                 "accuracy": "medium",
-                "tts_optimized": True,
-                "highlighting_support": True,
-                "speech_marks_compatible": True,
                 "available": True,
                 "recommended_for": ["cluttered pages", "news sites"]
             }
@@ -849,20 +641,16 @@ class AnalyticsService:
         
         return {
             "methods": methods,
-            "default_strategy": "intelligent_fallback_tts_optimized",
+            "default_strategy": "intelligent_fallback",
             "health_status": {"status": "healthy"},
-            "service_type": "TTS Content Extraction with Advanced Highlighting",
+            "service_type": "Content Extraction with TTS",
             "features": {
                 "content_extraction": True,
-                "highlighting": True,
-                "speech_marks": True,
-                "real_time_progress": True,
-                "chunk_processing": True,
-                "quality_analysis": True
+                "speech_synthesis": True,
+                "real_time_progress": True
             }
         }
 
-# Global service instances
 extraction_service = ExtractionService()
 tts_service = TTSService(aws_service)
 stripe_service = StripeService()

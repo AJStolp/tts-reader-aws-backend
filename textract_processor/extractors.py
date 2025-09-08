@@ -1,9 +1,12 @@
 import asyncio
 import time
 import logging
+import re
 from typing import Optional, Dict, Any, List
 from abc import ABC, abstractmethod
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from bs4 import BeautifulSoup
+import requests
 
 from .config import ExtractionMethod, ContentType, DEFAULT_CONFIG
 from .models import ExtractionResult, PageAnalysis
@@ -12,19 +15,15 @@ from .utils import URLValidator, ContentTypeDetector, TextCleaner, ContentAnalyz
 logger = logging.getLogger(__name__)
 
 class BaseExtractor(ABC):
-    """Abstract base class for content extractors"""
-    
     def __init__(self, config=None):
         self.config = config or DEFAULT_CONFIG
     
     @abstractmethod
-    async def extract(self, url: str, page_analysis: PageAnalysis = None) -> Optional[ExtractionResult]:
-        """Extract content from URL"""
+    async def extract(self, url: str, page_analysis: PageAnalysis = None, selection_text: Optional[str] = None) -> Optional[ExtractionResult]:
         pass
     
     def _create_result(self, text: str, method: ExtractionMethod, content_type: ContentType, 
                       processing_time: float, metadata: Dict[str, Any]) -> ExtractionResult:
-        """Create standardized extraction result"""
         cleaned_text = TextCleaner.clean_for_tts(text)
         confidence = ContentAnalyzer.score_content_quality(cleaned_text, method.value)
         
@@ -39,15 +38,18 @@ class BaseExtractor(ABC):
             metadata=metadata
         )
 
+    def _normalize_text(self, text: str) -> str:
+        text = re.sub(r'[\uFEFF\u200B\u200C\u200D\u00AD\uFFFE\uFFFF]', '', text)
+        text = re.sub(r'[\r\n\t]', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
 class TextractExtractor(BaseExtractor):
-    """AWS Textract-based content extractor for high-accuracy TTS content"""
-    
     def __init__(self, textract_client, config=None):
         super().__init__(config)
         self.textract = textract_client
     
-    async def extract(self, url: str, page_analysis: PageAnalysis = None, selection_text: Optional[str] = None) -> Optional[ExtractionResult]:  # NEW: Added selection_text parameter
-        """Extract content using AWS Textract OCR"""
+    async def extract(self, url: str, page_analysis: PageAnalysis = None, selection_text: Optional[str] = None) -> Optional[ExtractionResult]:
         if not self.textract:
             logger.info("Textract client not available")
             return None
@@ -58,10 +60,9 @@ class TextractExtractor(BaseExtractor):
         try:
             logger.info(f"Starting Textract extraction for TTS: {url}")
             
-            # NEW: Handle selection text if provided
             if selection_text:
                 logger.info(f"Using provided selection text for extraction: {selection_text[:30]}... ({len(selection_text)} chars)")
-                normalized_text = self._normalize_text(selection_text)  # NEW: Normalize selection text
+                normalized_text = self._normalize_text(selection_text)
                 if len(normalized_text) >= self.config.min_text_length:
                     processing_time = time.time() - start_time
                     metadata = {'method_specific': 'textract_selection', 'original_length': len(selection_text)}
@@ -70,7 +71,6 @@ class TextractExtractor(BaseExtractor):
                     logger.warning(f"Selection text too short after normalization: {len(normalized_text)} characters")
                     return None
             
-            # Generate PDF from webpage with TTS content filtering
             pdf_bytes = await self._render_page_to_pdf(url)
             if not pdf_bytes:
                 return None
@@ -79,7 +79,6 @@ class TextractExtractor(BaseExtractor):
                 logger.warning(f"PDF too large ({len(pdf_bytes)} bytes) for Textract")
                 return None
             
-            # Process with Textract
             logger.info(f"Processing PDF with Textract ({len(pdf_bytes)} bytes)")
             
             response = await asyncio.wait_for(
@@ -91,15 +90,11 @@ class TextractExtractor(BaseExtractor):
                 timeout=self.config.textract_timeout
             )
             
-            # Extract and process text
             extracted_text = self._process_textract_response(response)
-            
-            # UPDATED: Apply additional normalization to match frontend expectations
             normalized_text = self._normalize_text(extracted_text)
             
             if len(normalized_text) >= self.config.min_text_length:
                 processing_time = time.time() - start_time
-                
                 metadata = {
                     'pdf_size': len(pdf_bytes),
                     'textract_blocks': len(response.get('Blocks', [])),
@@ -125,18 +120,7 @@ class TextractExtractor(BaseExtractor):
             logger.error(f"Textract extraction failed for {url}: {str(e)}")
             return None
     
-    def _normalize_text(self, text: str) -> str:  # NEW: Added consistent normalization method to match frontend (e.g., remove invisible chars, collapse whitespace)
-        """Normalize text to match frontend processing"""
-        # Remove invisible Unicode characters
-        text = re.sub(r'[\uFEFF\u200B\u200C\u200D\u00AD\uFFFE\uFFFF]', '', text)
-        # Convert line breaks/tabs to spaces
-        text = re.sub(r'[\r\n\t]', ' ', text)
-        # Collapse consecutive whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
-
     async def _render_page_to_pdf(self, url: str) -> Optional[bytes]:
-        """Render webpage to PDF for Textract processing with enterprise TTS content filtering"""
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(
@@ -169,13 +153,15 @@ class TextractExtractor(BaseExtractor):
                     
                     await page.goto(url, wait_until="domcontentloaded", timeout=self.config.page_load_timeout)
                     
-                    # UPDATED: Apply TTS content filtering before PDF generation (with site-specific exclusions)
-                    success, filtered_text = await apply_tts_content_filtering(page, url, await page.title())
-                    if not success:
-                        logger.warning("TTS content filtering failed during PDF rendering")
-                        return None
+                    try:
+                        from .utils import apply_tts_content_filtering
+                        success, _ = await apply_tts_content_filtering(page, url, await page.title())
+                        if not success:
+                            logger.warning("TTS content filtering failed during PDF rendering")
+                            return None
+                    except ImportError:
+                        logger.warning("TTS content filtering not available")
                     
-                    # Generate PDF
                     pdf_bytes = await page.pdf(
                         format='A4',
                         print_background=True,
@@ -201,20 +187,227 @@ class TextractExtractor(BaseExtractor):
             return None
     
     def _process_textract_response(self, response: Dict[str, Any]) -> str:
-        """Process Textract response to extract clean text for TTS"""
         text = ""
         blocks = response.get('Blocks', [])
-        
-        # UPDATED: Prioritize layout-based extraction for better TTS flow
         layout_blocks = [b for b in blocks if b.get('BlockType') == 'LAYOUT_TEXT' or b.get('BlockType') == 'LINE']
         
         for block in layout_blocks:
             if 'Text' in block:
                 text += block['Text'] + " "
         
-        return self._normalize_text(text)  # UPDATED: Apply normalization
+        return self._normalize_text(text)
 
-# Other classes remain unchanged, but update ContentAnalyzer and TextCleaner if needed to match frontend normalization logic
+class DOMExtractor(BaseExtractor):
+    async def extract(self, url: str, page_analysis: PageAnalysis = None, selection_text: Optional[str] = None) -> Optional[ExtractionResult]:
+        start_time = time.time()
+        content_type = page_analysis.content_type if page_analysis else ContentType.UNKNOWN
+        
+        try:
+            if selection_text:
+                logger.info(f"Using provided selection text for DOM extraction: {selection_text[:30]}... ({len(selection_text)} chars)")
+                normalized_text = self._normalize_text(selection_text)
+                if len(normalized_text) >= self.config.min_text_length:
+                    processing_time = time.time() - start_time
+                    metadata = {'method_specific': 'dom_selection', 'original_length': len(selection_text)}
+                    return self._create_result(normalized_text, ExtractionMethod.DOM_FALLBACK, content_type, processing_time, metadata)
+                else:
+                    logger.warning(f"Selection text too short after normalization: {len(normalized_text)} characters")
+                    return None
+            
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                try:
+                    context = await browser.new_context()
+                    page = await context.new_page()
+                    await page.goto(url, wait_until="domcontentloaded", timeout=self.config.page_load_timeout)
+                    
+                    content = await page.content()
+                    soup = BeautifulSoup(content, 'html.parser')
+                    text = self._extract_dom_content(soup)
+                    normalized_text = self._normalize_text(text)
+                    
+                    if len(normalized_text) >= self.config.min_text_length:
+                        processing_time = time.time() - start_time
+                        metadata = {'url': url, 'method_specific': 'dom_basic'}
+                        result = self._create_result(
+                            normalized_text, ExtractionMethod.DOM_FALLBACK, content_type,
+                            processing_time, metadata
+                        )
+                        logger.info(f"DOM extraction successful: {result.char_count} chars in {processing_time:.2f}s")
+                        return result
+                    else:
+                        logger.warning(f"DOM extracted text too short: {len(normalized_text)} characters")
+                        return None
+                finally:
+                    await browser.close()
+        except Exception as e:
+            logger.error(f"DOM extraction failed for {url}: {str(e)}")
+            return None
+    
+    def _extract_dom_content(self, soup: BeautifulSoup) -> str:
+        for tag in soup(['script', 'style', 'nav', 'footer', 'header']):
+            tag.decompose()
+        text = soup.get_text(separator=' ', strip=True)
+        return text
 
-# Global instances
-# ... (unchanged)
+class DOMSemanticExtractor(DOMExtractor):
+    async def extract(self, url: str, page_analysis: PageAnalysis = None, selection_text: Optional[str] = None) -> Optional[ExtractionResult]:
+        start_time = time.time()
+        content_type = page_analysis.content_type if page_analysis else ContentType.UNKNOWN
+        
+        try:
+            if selection_text:
+                logger.info(f"Using provided selection text for semantic extraction: {selection_text[:30]}... ({len(selection_text)} chars)")
+                normalized_text = self._normalize_text(selection_text)
+                if len(normalized_text) >= self.config.min_text_length:
+                    processing_time = time.time() - start_time
+                    metadata = {'method_specific': 'dom_semantic_selection', 'original_length': len(selection_text)}
+                    return self._create_result(normalized_text, ExtractionMethod.DOM_SEMANTIC, content_type, processing_time, metadata)
+                else:
+                    logger.warning(f"Selection text too short after normalization: {len(normalized_text)} characters")
+                    return None
+            
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                try:
+                    context = await browser.new_context()
+                    page = await context.new_page()
+                    await page.goto(url, wait_until="domcontentloaded", timeout=self.config.page_load_timeout)
+                    
+                    content = await page.content()
+                    soup = BeautifulSoup(content, 'html.parser')
+                    text = self._extract_semantic_content(soup)
+                    normalized_text = self._normalize_text(text)
+                    
+                    if len(normalized_text) >= self.config.min_text_length:
+                        processing_time = time.time() - start_time
+                        metadata = {'url': url, 'method_specific': 'dom_semantic'}
+                        result = self._create_result(
+                            normalized_text, ExtractionMethod.DOM_SEMANTIC, content_type,
+                            processing_time, metadata
+                        )
+                        logger.info(f"DOM semantic extraction successful: {result.char_count} chars in {processing_time:.2f}s")
+                        return result
+                    else:
+                        logger.warning(f"DOM semantic extracted text too short: {len(normalized_text)} characters")
+                        return None
+                finally:
+                    await browser.close()
+        except Exception as e:
+            logger.error(f"DOM semantic extraction failed for {url}: {str(e)}")
+            return None
+    
+    def _extract_semantic_content(self, soup: BeautifulSoup) -> str:
+        content_elements = soup.find_all(['article', 'main', 'section', 'p'])
+        text = ' '.join(elem.get_text(strip=True) for elem in content_elements if elem.get_text(strip=True))
+        return text
+
+class DOMHeuristicExtractor(DOMExtractor):
+    async def extract(self, url: str, page_analysis: PageAnalysis = None, selection_text: Optional[str] = None) -> Optional[ExtractionResult]:
+        start_time = time.time()
+        content_type = page_analysis.content_type if page_analysis else ContentType.UNKNOWN
+        
+        try:
+            if selection_text:
+                logger.info(f"Using provided selection text for heuristic extraction: {selection_text[:30]}... ({len(selection_text)} chars)")
+                normalized_text = self._normalize_text(selection_text)
+                if len(normalized_text) >= self.config.min_text_length:
+                    processing_time = time.time() - start_time
+                    metadata = {'method_specific': 'dom_heuristic_selection', 'original_length': len(selection_text)}
+                    return self._create_result(normalized_text, ExtractionMethod.DOM_HEURISTIC, content_type, processing_time, metadata)
+                else:
+                    logger.warning(f"Selection text too short after normalization: {len(normalized_text)} characters")
+                    return None
+            
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                try:
+                    context = await browser.new_context()
+                    page = await context.new_page()
+                    await page.goto(url, wait_until="domcontentloaded", timeout=self.config.page_load_timeout)
+                    
+                    content = await page.content()
+                    soup = BeautifulSoup(content, 'html.parser')
+                    text = self._extract_heuristic_content(soup)
+                    normalized_text = self._normalize_text(text)
+                    
+                    if len(normalized_text) >= self.config.min_text_length:
+                        processing_time = time.time() - start_time
+                        metadata = {'url': url, 'method_specific': 'dom_heuristic'}
+                        result = self._create_result(
+                            normalized_text, ExtractionMethod.DOM_HEURISTIC, content_type,
+                            processing_time, metadata
+                        )
+                        logger.info(f"DOM heuristic extraction successful: {result.char_count} chars in {processing_time:.2f}s")
+                        return result
+                    else:
+                        logger.warning(f"DOM heuristic extracted text too short: {len(normalized_text)} characters")
+                        return None
+                finally:
+                    await browser.close()
+        except Exception as e:
+            logger.error(f"DOM heuristic extraction failed for {url}: {str(e)}")
+            return None
+    
+    def _extract_heuristic_content(self, soup: BeautifulSoup) -> str:
+        content_elements = soup.find_all(['div', 'p', 'article'], class_=['content', 'main-content', 'post', 'article'])
+        text = ' '.join(elem.get_text(strip=True) for elem in content_elements if elem.get_text(strip=True))
+        return text
+
+class ReaderModeExtractor(DOMExtractor):
+    async def extract(self, url: str, page_analysis: PageAnalysis = None, selection_text: Optional[str] = None) -> Optional[ExtractionResult]:
+        start_time = time.time()
+        content_type = page_analysis.content_type if page_analysis else ContentType.UNKNOWN
+        
+        try:
+            if selection_text:
+                logger.info(f"Using provided selection text for reader mode extraction: {selection_text[:30]}... ({len(selection_text)} chars)")
+                normalized_text = self._normalize_text(selection_text)
+                if len(normalized_text) >= self.config.min_text_length:
+                    processing_time = time.time() - start_time
+                    metadata = {'method_specific': 'reader_mode_selection', 'original_length': len(selection_text)}
+                    return self._create_result(normalized_text, ExtractionMethod.READER_MODE, content_type, processing_time, metadata)
+                else:
+                    logger.warning(f"Selection text too short after normalization: {len(normalized_text)} characters")
+                    return None
+            
+            response = requests.get(url, timeout=self.config.page_load_timeout / 1000)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+            text = self._extract_reader_mode_content(soup)
+            normalized_text = self._normalize_text(text)
+            
+            if len(normalized_text) >= self.config.min_text_length:
+                processing_time = time.time() - start_time
+                metadata = {'url': url, 'method_specific': 'reader_mode'}
+                result = self._create_result(
+                    normalized_text, ExtractionMethod.READER_MODE, content_type,
+                    processing_time, metadata
+                )
+                logger.info(f"Reader mode extraction successful: {result.char_count} chars in {processing_time:.2f}s")
+                return result
+            else:
+                logger.warning(f"Reader mode extracted text too short: {len(normalized_text)} characters")
+                return None
+        except Exception as e:
+            logger.error(f"Reader mode extraction failed for {url}: {str(e)}")
+            return None
+    
+    def _extract_reader_mode_content(self, soup: BeautifulSoup) -> str:
+        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+            tag.decompose()
+        main_content = soup.find(['article', 'main']) or soup.body
+        if main_content:
+            text = main_content.get_text(separator=' ', strip=True)
+        else:
+            text = soup.get_text(separator=' ', strip=True)
+        return text
+
+__all__ = [
+    'BaseExtractor',
+    'TextractExtractor',
+    'DOMExtractor',
+    'DOMSemanticExtractor',
+    'DOMHeuristicExtractor',
+    'ReaderModeExtractor'
+]

@@ -393,35 +393,16 @@ async def extract_content_enhanced(
             
             db.commit()
             
-            # Create a basic highlighting map for frontend compatibility
-            try:
-                from .highlighting import create_basic_highlight_map
-                basic_highlight_map = create_basic_highlight_map(extracted_text, method)
-            except ImportError:
-                # Create minimal highlighting map
-                basic_highlight_map = {
-                    "text": extracted_text,
-                    "segments": [],
-                    "words": [],
-                    "total_duration": 0,
-                    "extraction_method": method,
-                    "created_at": datetime.now().isoformat()
-                }
-            
-            # Return structure that matches frontend expectations
+            # Return simplified structure
             return {
                 "text": extracted_text,
                 "characters_used": text_length,
                 "remaining_chars": current_user.remaining_chars,
                 "extraction_method": method,
-                "method_used": method,
                 "word_count": len(extracted_text.split()),
                 "processing_time": 0.5,
                 "textract_used": False,
-                "success": True,
-                "tts_optimized": True,
-                "highlighting_map": basic_highlight_map,
-                "segment_count": len(basic_highlight_map.get("segments", [])),
+                "success": True
             }
             
         except Exception as e:
@@ -440,32 +421,42 @@ async def extract_content_enhanced(
         client_ip = "127.0.0.1"  # In production, extract from request headers
         user_agent = "TTS-Extension/1.0"
         
-        # FIXED: Use the correct method name with detailed error handling
+        # Use basic extraction instead of complex enhanced processing
         try:
-            result = await enhanced_extraction_service.extract_with_highlighting(
-                url=request.url,
-                user=current_user,
-                db=db,
-                prefer_textract=request.prefer_textract,
-                include_metadata=request.include_metadata,
-                include_highlighting=True,  # Always include highlighting for TTS
-                include_speech_marks=False,  # Default to basic highlighting
-                quality_analysis=True,
-                highlighting_options={
-                    "segment_type": "sentence",  # Default to sentence-level
-                    "chunk_size": 3000,
-                    "overlap_sentences": 1
-                },
-                request_ip=client_ip,
-                user_agent=user_agent
-            )
+            extracted_text, method = await extract_content(request.url)
+            
+            if not extracted_text:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Could not extract content from the provided URL"
+                )
+            
+            text_length = len(extracted_text)
+            
+            if not current_user.deduct_characters(text_length):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Text length ({text_length}) exceeds remaining character limit ({current_user.remaining_chars})"
+                )
+            
+            db.commit()
+            
+            result = {
+                "text": extracted_text,
+                "characters_used": text_length,
+                "remaining_chars": current_user.remaining_chars,
+                "extraction_method": method,
+                "word_count": len(extracted_text.split()),
+                "processing_time": 0.5,
+                "success": True
+            }
             
             print(f"DEBUG: Extraction completed successfully")
             print(f"DEBUG: Result type: {type(result)}")
             print(f"DEBUG: Result keys: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
             
         except Exception as extract_error:
-            print(f"ERROR: Enhanced extraction service failed:")
+            print(f"ERROR: Extraction failed:")
             print(f"Exception type: {type(extract_error).__name__}")
             print(f"Exception message: {str(extract_error)}")
             print(f"Full traceback:")
@@ -567,7 +558,7 @@ async def synthesize_text(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Synthesize text to speech using Amazon Polly with enhanced TTS processing"""
+    """Synthesize text to speech using Amazon Polly"""
     try:
         # Support both field names for backwards compatibility
         text_content = getattr(request, 'text_to_speech', None) or getattr(request, 'text', None)
@@ -575,23 +566,78 @@ async def synthesize_text(
         if not text_content:
             raise HTTPException(status_code=400, detail="Text content is required")
         
-        # Always include highlighting/speech marks for debugging
-        include_speech_marks = getattr(request, 'include_speech_marks', True)  # Default to True
-        logger.info(f"🔍 Debug: Frontend requested include_speech_marks: {include_speech_marks}")
-        
         return await tts_service.synthesize_text(
             text_content, 
             request.voice_id, 
             request.engine, 
             current_user, 
-            db,
-            include_highlighting=include_speech_marks
+            db
         )
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         logger.error(f"Synthesis error for user {current_user.username}: {str(e)}")
         raise HTTPException(status_code=500, detail="An error occurred during text synthesis")
+
+@tts_router.post("/extract-and-synthesize")
+async def extract_and_synthesize(
+    request: Dict[str, Any],
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Extract text from URL and synthesize with clean speech marks"""
+    try:
+        url = request.get("url")
+        voice_id = request.get("voice_id", current_user.voice_id)
+        engine = request.get("engine", current_user.engine)
+        
+        if not url:
+            raise HTTPException(status_code=400, detail="URL is required")
+        
+        # Extract text
+        extracted_text, method = await extract_content(url)
+        
+        if not extracted_text:
+            raise HTTPException(
+                status_code=422,
+                detail="Could not extract content from the provided URL"
+            )
+        
+        text_length = len(extracted_text)
+        
+        if not current_user.deduct_characters(text_length):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Text length ({text_length}) exceeds remaining character limit ({current_user.remaining_chars})"
+            )
+        
+        # Synthesize with clean speech marks
+        synthesis_result = await tts_service.synthesize_text(
+            extracted_text,
+            voice_id,
+            engine,
+            current_user,
+            db
+        )
+        
+        # Return clean format
+        return {
+            "text": extracted_text,
+            "speech_marks": synthesis_result.speech_marks,
+            "audio_url": synthesis_result.audio_url,
+            "duration": synthesis_result.duration_seconds,
+            "characters_used": text_length,
+            "remaining_chars": current_user.remaining_chars,
+            "extraction_method": method,
+            "voice_used": voice_id,
+            "engine_used": engine
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Extract and synthesize error: {str(e)}")
+        raise HTTPException(status_code=500, detail="An error occurred during processing")
 
 @tts_router.get("/voices")
 async def get_voices(current_user: User = Depends(get_current_user)):
@@ -805,24 +851,33 @@ async def extract_content_with_speech_marks(
         client_ip = "127.0.0.1"
         user_agent = "TTS-Extension/1.0"
         
-        # Extract with speech marks for precise timing
-        result = await enhanced_extraction_service.extract_with_highlighting(
-            url=request.url,
-            user=current_user,
-            db=db,
-            prefer_textract=request.prefer_textract,
-            include_metadata=request.include_metadata,
-            include_highlighting=True,
-            include_speech_marks=True,  # Generate precise speech marks
-            quality_analysis=True,
-            highlighting_options={
-                "voice_id": getattr(request, 'voice_id', current_user.voice_id),
-                "engine": getattr(request, 'engine', current_user.engine),
-                "segment_type": "sentence"
-            },
-            request_ip=client_ip,
-            user_agent=user_agent
-        )
+        # Use basic extraction
+        extracted_text, method = await extract_content(request.url)
+        
+        if not extracted_text:
+            raise HTTPException(
+                status_code=422,
+                detail="Could not extract content from the provided URL"
+            )
+        
+        text_length = len(extracted_text)
+        
+        if not current_user.deduct_characters(text_length):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Text length ({text_length}) exceeds remaining character limit ({current_user.remaining_chars})"
+            )
+        
+        db.commit()
+        
+        result = {
+            "text": extracted_text,
+            "characters_used": text_length,
+            "remaining_chars": current_user.remaining_chars,
+            "extraction_method": method,
+            "word_count": len(extracted_text.split()),
+            "processing_time": 0.5
+        }
         
         logger.info(f"✅ Speech mark extraction completed with precise timing")
         return result
@@ -1067,44 +1122,17 @@ async def test_extraction_methods(
         
         logger.info(f"🧪 Testing extraction methods for: {url}")
         
-        # Test with enhanced service if available
-        if ENHANCED_EXTRACTION_AVAILABLE and test_all_methods:
-            result = await enhanced_extraction_service.extract_with_highlighting(
-                url=url,
-                user=current_user,
-                db=db,
-                prefer_textract=True,
-                include_highlighting=True,
-                quality_analysis=include_metrics,
-                request_ip="127.0.0.1",
-                user_agent="TTS-Test/1.0"
-            )
-            
-            # Don't charge for test extractions - rollback
-            db.rollback()
-            
-            return {
-                "success": True,
-                "method_used": result.get("method_used", "unknown"),
-                "textract_used": result.get("textract_used", False),
-                "fallback_used": False,
-                "text": result.get("text", "")[:500] + "..." if len(result.get("text", "")) > 500 else result.get("text", ""),
-                "highlighting_map": result.get("highlighting_map") is not None,
-                "extraction_metrics": result.get("extraction_metrics", {}),
-                "test_mode": True
-            }
-        else:
-            # Fallback to basic extraction
-            extracted_text, method = await extract_content(url)
-            return {
-                "success": True,
-                "method_used": method,
-                "textract_used": False,
-                "fallback_used": True,
-                "text": extracted_text[:500] + "..." if len(extracted_text) > 500 else extracted_text,
-                "highlighting_map": False,
-                "test_mode": True
-            }
+        # Use basic extraction for testing
+        extracted_text, method = await extract_content(url)
+        
+        # Don't charge for test extractions
+        return {
+            "success": True,
+            "method_used": method,
+            "textract_used": "textract" in method.lower(),
+            "text": extracted_text[:500] + "..." if len(extracted_text) > 500 else extracted_text,
+            "test_mode": True
+        }
             
     except Exception as e:
         logger.error(f"❌ Test extraction failed: {str(e)}")

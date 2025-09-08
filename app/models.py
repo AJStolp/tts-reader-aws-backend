@@ -66,11 +66,6 @@ class ExtractResponseEnhanced(BaseModel):
     word_count: Optional[int] = None
     processing_time: Optional[float] = None
     metadata: Optional[Dict[str, Any]] = None
-    highlighting_map: Optional[Dict[str, Any]] = None
-    segment_count: Optional[int] = None
-    estimated_reading_time: Optional[float] = None
-    tts_optimized: Optional[bool] = None
-    highlighting_available: Optional[bool] = None
 
 class ExtractionProgress(BaseModel):
     """Model for extraction progress updates"""
@@ -98,24 +93,16 @@ class SynthesizeRequest(BaseModel):
     text_to_speech: str = Field(..., min_length=1, max_length=100000)
     voice_id: str = Field(default="Joanna", max_length=50)
     engine: str = Field(default="standard", pattern="^(standard|neural)$")
-    include_speech_marks: bool = Field(default=True, description="Whether to generate speech marks for highlighting")
 
 class SynthesizeResponse(BaseModel):
     """Model for TTS synthesis response"""
     audio_url: str
-    speech_marks: List[Dict[str, Any]] = Field(default_factory=list, description="Array of speech marks for frontend")
-    speech_marks_url: Optional[str] = Field(default=None, description="URL to speech marks file")
+    speech_marks: List[Dict[str, Any]] = Field(default_factory=list, description="Clean AWS Polly speech marks")
     characters_used: int
     remaining_chars: int
     duration_seconds: float
     voice_used: Optional[str] = None
     engine_used: Optional[str] = None
-    chunks_processed: Optional[int] = None
-    ssml_enhanced: Optional[bool] = None
-    text_type: Optional[str] = None
-    highlighting_map: Optional[Dict[str, Any]] = None
-    speech_marks_raw: Optional[str] = None
-    precise_timing: Optional[bool] = None
 
 # User preferences models
 class PreferencesUpdate(BaseModel):
@@ -158,16 +145,11 @@ class AnalyticsResponse(BaseModel):
     total_extractions: int
     total_characters: int
     average_extraction_time: float
-    tts_optimized_extractions: int
     methods_used: Dict[str, int]
     success_rate: float
     average_confidence: float
     most_common_sites: list
     content_types: Dict[str, int]
-    highlighting_success_rate: Optional[float] = None
-    average_segments_per_extraction: Optional[int] = None
-    speech_marks_generated: Optional[int] = None
-    total_audio_duration_minutes: Optional[float] = None
 
 # Error models
 class ErrorResponse(BaseModel):
