@@ -60,6 +60,7 @@ tts_router = APIRouter(prefix="/api", tags=["Text-to-Speech"])
 user_router = APIRouter(prefix="/api", tags=["User Management"])
 payment_router = APIRouter(prefix="/api", tags=["Payments"])
 admin_router = APIRouter(prefix="/api/admin", tags=["Administration"])
+training_router = APIRouter(prefix="/api", tags=["Training Interface"])
 
 # Authentication endpoints (EXISTING - ENHANCED)
 @auth_router.post("/register", response_model=UserResponse)
@@ -1143,6 +1144,326 @@ async def test_extraction_methods(
             "test_mode": True
         }
 
+# Training Interface endpoints for human labeling
+@training_router.post("/extract-content")
+async def training_extract_content(request: dict):
+    """Extract content blocks from URL for human labeling"""
+    import asyncio
+    import re
+    from playwright.async_api import async_playwright
+    
+    try:
+        url = request.get('url')
+        if not url:
+            return {"error": "URL is required", "success": False}
+        
+        # Extract content using Playwright
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            
+            await page.set_extra_http_headers({
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
+            })
+            
+            await page.goto(url, wait_until='networkidle', timeout=30000)
+            await page.wait_for_timeout(2000)
+            
+            content_areas = await page.evaluate('''
+                () => {
+                    const contentSelectors = [
+                        'article', 'main', '[role="main"]',
+                        '.content', '.post-content', '.entry-content',
+                        '.article-content', '.page-content', '.story-body',
+                        'section', '.section',
+                        'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                        'p', 'div'
+                    ];
+                    const areas = [];
+                    
+                    const viewportWidth = window.innerWidth;
+                    const viewportHeight = window.innerHeight;
+                    
+                    contentSelectors.forEach(selector => {
+                        try {
+                            const elements = document.querySelectorAll(selector);
+                            elements.forEach((el, index) => {
+                                const text = el.innerText || '';
+                                if (text.length > 20) {
+                                    const rect = el.getBoundingClientRect();
+                                    const style = window.getComputedStyle(el);
+                                    
+                                    areas.push({
+                                        text: text.substring(0, 2000),
+                                        textLength: text.length,
+                                        tagName: el.tagName.toLowerCase(),
+                                        className: el.className || '',
+                                        id: el.id || '',
+                                        x_percent: (rect.left / viewportWidth) * 100,
+                                        y_percent: (rect.top / viewportHeight) * 100,
+                                        width_percent: (rect.width / viewportWidth) * 100,
+                                        height_percent: (rect.height / viewportHeight) * 100,
+                                        fontSize: parseFloat(style.fontSize) || 16,
+                                    });
+                                }
+                            });
+                        } catch (e) {}
+                    });
+                    return areas;
+                }
+            ''')
+            
+            await browser.close()
+            
+            # Clean and format content
+            def clean_text(text):
+                # Remove emojis and weird characters
+                emoji_pattern = re.compile("["
+                    u"\U0001F600-\U0001F64F"  # emoticons
+                    u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+                    u"\U0001F680-\U0001F6FF"  # transport & map symbols
+                    u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
+                    "]+", flags=re.UNICODE)
+                text = emoji_pattern.sub(r'', text)
+                text = re.sub(r'[\u2600-\u26FF\u2700-\u27BF]', '', text)
+                text = re.sub(r'[\u2190-\u21FF]', '', text)
+                text = re.sub(r'[\u25A0-\u25FF]', '', text)
+                text = re.sub(r'\s+', ' ', text).strip()
+                return text
+            
+            def determine_visual_zone(area):
+                x_pos = area.get('x_percent', 0)
+                y_pos = area.get('y_percent', 0)
+                width_pct = area.get('width_percent', 0)
+                
+                if x_pos >= 20 and x_pos <= 80 and width_pct > 30:
+                    return "CENTER"
+                elif x_pos < 25 and width_pct < 30:
+                    return "LEFT_SIDEBAR"
+                elif x_pos > 75 and width_pct < 30:
+                    return "RIGHT_SIDEBAR"
+                elif y_pos < 15:
+                    return "HEADER"
+                elif y_pos > 85:
+                    return "FOOTER"
+                else:
+                    return "OTHER"
+            
+            def get_recommendation(area):
+                zone = determine_visual_zone(area)
+                text_len = area.get('textLength', 0)
+                font_size = area.get('fontSize', 16)
+                
+                if zone == "CENTER" and (text_len > 500 or font_size > 24):
+                    return "LIKELY_GOOD"
+                elif zone in ["LEFT_SIDEBAR", "RIGHT_SIDEBAR", "FOOTER"]:
+                    return "LIKELY_BAD"
+                elif zone == "HEADER" and text_len > 1000:
+                    return "MAYBE_GOOD"
+                else:
+                    return "MAYBE"
+            
+            def extract_features_for_training(area, url):
+                text = area.get('text', '')
+                tag_name = area.get('tagName', '').lower()
+                class_name = area.get('className', '').lower()
+                element_id = area.get('id', '').lower()
+                
+                x_percent = area.get('x_percent', 0)
+                y_percent = area.get('y_percent', 0)
+                width_percent = area.get('width_percent', 0)
+                font_size = area.get('fontSize', 16)
+                
+                def calculate_link_density(text):
+                    links = re.findall(r'<a[^>]*>([^<]*)</a>', text, re.IGNORECASE)
+                    link_chars = sum(len(link) for link in links)
+                    return link_chars / max(len(text), 1)
+                
+                features = {
+                    'text_length': len(text),
+                    'word_count': len(text.split()),
+                    'avg_word_length': sum(len(word) for word in text.split()) / max(len(text.split()), 1),
+                    'sentence_count': len([s for s in text.split('.') if s.strip()]),
+                    'paragraph_count': text.count('\n\n') + 1,
+                    'heading_count': 1 if tag_name.startswith('h') and len(tag_name) == 2 else 0,
+                    'is_article': 1.0 if tag_name == 'article' else 0.0,
+                    'is_main': 1.0 if tag_name == 'main' else 0.0,
+                    'is_section': 1.0 if tag_name == 'section' else 0.0,
+                    'is_div': 1.0 if tag_name == 'div' else 0.0,
+                    'is_heading': 1.0 if tag_name.startswith('h') and len(tag_name) == 2 else 0.0,
+                    'has_content_class': 1.0 if 'content' in class_name else 0.0,
+                    'has_article_class': 1.0 if 'article' in class_name else 0.0,
+                    'has_post_class': 1.0 if 'post' in class_name else 0.0,
+                    'has_main_class': 1.0 if 'main' in class_name else 0.0,
+                    'has_navigation_class': 1.0 if any(nav in class_name for nav in ['nav', 'menu', 'sidebar']) else 0.0,
+                    'has_ad_class': 1.0 if any(ad in class_name for ad in ['ad', 'advertisement', 'sponsor']) else 0.0,
+                    'link_density': calculate_link_density(text),
+                    'uppercase_ratio': sum(1 for c in text if c.isupper()) / max(len(text), 1),
+                    'digit_ratio': sum(1 for c in text if c.isdigit()) / max(len(text), 1),
+                    'special_char_ratio': sum(1 for c in text if not c.isalnum() and not c.isspace()) / max(len(text), 1),
+                    'x_position_percent': x_percent,
+                    'y_position_percent': y_percent,
+                    'width_percent': width_percent,
+                    'is_center_column': 1.0 if 20 <= x_percent <= 80 and width_percent > 30 else 0.0,
+                    'is_left_sidebar': 1.0 if x_percent < 25 and width_percent < 30 else 0.0,
+                    'is_right_sidebar': 1.0 if x_percent > 75 and width_percent < 30 else 0.0,
+                    'is_header_area': 1.0 if y_percent < 15 else 0.0,
+                    'is_footer_area': 1.0 if y_percent > 85 else 0.0,
+                    'is_main_content_area': 1.0 if 15 <= y_percent <= 85 and 20 <= x_percent <= 80 else 0.0,
+                    'is_large_element': 1.0 if width_percent > 50 and area.get('height_percent', 0) > 20 else 0.0,
+                    'is_small_element': 1.0 if width_percent < 20 or area.get('height_percent', 0) < 5 else 0.0,
+                    'font_size': font_size,
+                    'is_large_font': 1.0 if font_size > 18 else 0.0,
+                    'is_small_font': 1.0 if font_size < 14 else 0.0,
+                    'is_blog': 1.0 if 'blog' in url else 0.0,
+                    'is_docs': 1.0 if any(doc in url for doc in ['docs', 'documentation', 'guide']) else 0.0,
+                    'is_news': 1.0 if 'news' in url else 0.0,
+                }
+                return features
+            
+            # Process content blocks
+            cleaned_areas = []
+            for i, area in enumerate(content_areas):
+                text = clean_text(area.get('text', ''))
+                
+                if len(text) > 20:
+                    cleaned_area = {
+                        'id': i + 1,
+                        'text': text,
+                        'textLength': len(text),
+                        'tagName': area.get('tagName', 'unknown'),
+                        'fontSize': area.get('fontSize', 16),
+                        'visualZone': determine_visual_zone(area),
+                        'recommendation': get_recommendation(area),
+                        'x_percent': round(area.get('x_percent', 0), 1),
+                        'y_percent': round(area.get('y_percent', 0), 1),
+                        'width_percent': round(area.get('width_percent', 0), 1),
+                        'features': extract_features_for_training(area, url)
+                    }
+                    cleaned_areas.append(cleaned_area)
+            
+            return {
+                'success': True,
+                'url': url,
+                'contentBlocks': cleaned_areas[:20],
+                'totalFound': len(content_areas)
+            }
+            
+    except Exception as e:
+        logger.error(f"Training content extraction error: {str(e)}")
+        return {"error": str(e), "success": False}
+
+@training_router.post("/submit-labels")
+async def training_submit_labels(request: dict):
+    """Submit human labels and train model"""
+    import json
+    import os
+    
+    try:
+        url = request.get('url')
+        labels = request.get('labels')
+        
+        if not url or not labels:
+            return {"error": "URL and labels are required", "success": False}
+        
+        # Save labeled data
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"human_labeled_{timestamp}.json"
+        data_dir = "training_interface/data"
+        
+        # Create directory if it doesn't exist
+        os.makedirs(data_dir, exist_ok=True)
+        
+        training_data = []
+        for label_data in labels:
+            if 'features' in label_data:
+                training_example = {
+                    'url': url,
+                    'text_preview': label_data.get('text', '')[:200],
+                    'label': float(label_data.get('label', 0)),
+                    'human_labeled': True,
+                    'visual_zone': label_data.get('visualZone', 'OTHER'),
+                    'features': label_data.get('features', {}),
+                    'timestamp': timestamp
+                }
+                training_data.append(training_example)
+        
+        # Save to file
+        file_path = os.path.join(data_dir, filename)
+        with open(file_path, 'w') as f:
+            json.dump(training_data, f, indent=2)
+        
+        logger.info(f"Saved {len(training_data)} training examples to {filename}")
+        
+        return {
+            'success': True,
+            'message': f'Received {len(training_data)} labels and saved training data',
+            'filename': filename,
+            'training_result': {
+                'success': True,
+                'total_examples': len(training_data),
+                'include_examples': sum(1 for ex in training_data if ex['label'] == 1.0),
+                'exclude_examples': sum(1 for ex in training_data if ex['label'] == 0.0)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Training label submission error: {str(e)}")
+        return {"error": str(e), "success": False}
+
+@training_router.post("/test-model")
+async def training_test_model(request: dict):
+    """Test current model on new URL"""
+    try:
+        url = request.get('url')
+        if not url:
+            return {"error": "URL is required", "success": False}
+        
+        # Extract content first
+        extract_result = await training_extract_content({"url": url})
+        
+        if not extract_result.get('success'):
+            return {"error": "Content extraction failed", "success": False}
+        
+        content_blocks = extract_result.get('contentBlocks', [])
+        
+        # Simple heuristic predictions for now
+        results = []
+        for block in content_blocks[:15]:
+            zone = block.get('visualZone', 'OTHER')
+            font_size = block.get('fontSize', 16)
+            text_len = block.get('textLength', 0)
+            
+            # Prediction logic
+            if zone == "CENTER" and (text_len > 300 or font_size > 20):
+                prediction = 0.9
+            elif zone in ["LEFT_SIDEBAR", "RIGHT_SIDEBAR", "FOOTER"]:
+                prediction = 0.1
+            elif zone == "HEADER":
+                prediction = 0.6 if text_len > 500 else 0.2
+            else:
+                prediction = 0.5
+            
+            result = {
+                'id': block['id'],
+                'text': block['text'][:200],
+                'prediction': round(prediction, 3),
+                'recommended': prediction > 0.5,
+                'visualZone': zone,
+                'confidence': 'High' if abs(prediction - 0.5) > 0.3 else 'Medium'
+            }
+            results.append(result)
+        
+        return {
+            'success': True,
+            'url': url,
+            'predictions': results
+        }
+        
+    except Exception as e:
+        logger.error(f"Training model test error: {str(e)}")
+        return {"error": str(e), "success": False}
+
 # FIXED: Add exports at the end of the file for proper import
 __all__ = [
     'auth_router',
@@ -1151,6 +1472,7 @@ __all__ = [
     'user_router',
     'payment_router',
     'admin_router',
+    'training_router',
     'ENHANCED_EXTRACTION_AVAILABLE',
     'enhanced_extraction_service'
 ]

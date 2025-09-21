@@ -13,7 +13,7 @@ import time
 from .config import config, validate_security_config
 from .routes import (
     auth_router, extraction_router, tts_router, 
-    user_router, payment_router, admin_router
+    user_router, payment_router, admin_router, training_router
 )
 from .services import aws_service
 from .enterprise_security import enterprise_security, get_enterprise_security_headers
@@ -273,6 +273,9 @@ def create_app() -> FastAPI:
     
     app.include_router(admin_router, tags=["Administration - Audit Logged"])
     logger.info("✅ Admin router registered")
+    
+    app.include_router(training_router, tags=["Training Interface - ML Content Labeling"])
+    logger.info("✅ Training router registered")
     
     # Enhanced root endpoint with security information
     @app.get("/", tags=["System Information"])
