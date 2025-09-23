@@ -414,23 +414,29 @@ async def extract_content_enhanced(
         logger.info(f"🚀 Enhanced TTS extraction request from {current_user.username}: {request.url}")
         
         # DEBUG: Print the actual execution
-        print(f"DEBUG: Starting extraction for {request.url}")
-        print(f"DEBUG: User: {current_user.username}")
-        print(f"DEBUG: Enhanced service available: {ENHANCED_EXTRACTION_AVAILABLE}")
+        logger.debug(f"Enhanced extraction for {request.url}, user: {current_user.username}")
         
         # Get client info for security logging
         client_ip = "127.0.0.1"  # In production, extract from request headers
         user_agent = "TTS-Extension/1.0"
         
-        # Use basic extraction instead of complex enhanced processing
+        # Check for pre-extracted content first (frontend priority)
         try:
-            extracted_text, method = await extract_content(request.url)
-            
-            if not extracted_text:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Could not extract content from the provided URL"
-                )
+            if request.content and len(request.content.strip()) > 0:
+                # Use provided content (from frontend) - PRIORITY PATH
+                logger.debug(f"Using provided content: {len(request.content)} chars")
+                extracted_text = request.content
+                method = "frontend_provided"
+            else:
+                # Fallback to URL extraction (training/testing path)
+                logger.debug(f"Extracting from URL")
+                extracted_text, method = await extract_content(request.url)
+                
+                if not extracted_text:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Could not extract content from the provided URL"
+                    )
             
             text_length = len(extracted_text)
             
@@ -449,12 +455,12 @@ async def extract_content_enhanced(
                 "extraction_method": method,
                 "word_count": len(extracted_text.split()),
                 "processing_time": 0.5,
-                "success": True
+                "success": True,
+                "content_source": "frontend_provided" if method == "frontend_provided" else "backend_extracted",
+                "using_provided_content": method == "frontend_provided"
             }
             
-            print(f"DEBUG: Extraction completed successfully")
-            print(f"DEBUG: Result type: {type(result)}")
-            print(f"DEBUG: Result keys: {result.keys() if isinstance(result, dict) else 'Not a dict'}")
+            logger.debug(f"Extraction completed: {len(extracted_text)} chars, method: {method}")
             
         except Exception as extract_error:
             print(f"ERROR: Extraction failed:")
@@ -1576,18 +1582,58 @@ async def train_with_uploaded_labels(request: dict):
 @training_router.post("/test-model")
 async def training_test_model(request: dict):
     """Test current model on new URL"""
+    def create_content_blocks_from_text(content, url):
+        """Create content blocks from pre-extracted text"""
+        import re
+        
+        # Split content into paragraphs and sentences
+        paragraphs = content.split('\n\n')
+        content_blocks = []
+        block_id = 1
+        
+        for para in paragraphs:
+            para = para.strip()
+            if len(para) > 30:  # Only substantial content
+                content_blocks.append({
+                    'id': block_id,
+                    'text': para[:500],  # Limit for processing
+                    'textLength': len(para),
+                    'type': 'paragraph',
+                    'source': 'frontend_provided',
+                    'visualZone': 'CENTER',  # Default zone
+                    'fontSize': 16,  # Default font size
+                    'confidence': 'Medium'  # Default confidence
+                })
+                block_id += 1
+        
+        return content_blocks
+    
     try:
         url = request.get('url')
+        content = request.get('content')  # 🎯 Check for pre-extracted content
+        
+        # Minimal logging for performance
+        logger.debug(f"Test model request for URL: {url}, content: {'provided' if content else 'extract'}")
+        
         if not url:
             return {"error": "URL is required", "success": False}
         
-        # Extract content first
-        extract_result = await training_extract_content({"url": url})
-        
-        if not extract_result.get('success'):
-            return {"error": "Content extraction failed", "success": False}
-        
-        content_blocks = extract_result.get('contentBlocks', [])
+        # Check for content parameter FIRST and be explicit about it
+        if content and len(content.strip()) > 0:
+            # Use provided content (from frontend) - PRIORITY PATH
+            logger.debug(f"Using provided content: {len(content)} chars")
+            content_blocks = create_content_blocks_from_text(content, url)
+            content_source = "frontend_provided"
+        else:
+            # Fallback to extraction (training/testing path)
+            logger.debug(f"Extracting from URL: {url}")
+            extract_result = await training_extract_content({"url": url})
+            
+            if not extract_result.get('success'):
+                return {"error": "Content extraction failed", "success": False}
+            
+            content_blocks = extract_result.get('contentBlocks', [])
+            content_source = "backend_extracted"
         
         # USE THE ACTUAL TRAINED MODEL! 🚀
         import torch
@@ -1687,6 +1733,12 @@ async def training_test_model(request: dict):
             'success': True,
             'url': url,
             'predictions': results,
+            'content_info': {
+                'source': content_source,
+                'content_length': len(content) if content else sum(len(block.get('text', '')) for block in content_blocks),
+                'blocks_processed': len(results),
+                'using_provided_content': content_source == "frontend_provided"
+            },
             'model_info': {
                 'using_trained_model': model_available,
                 'model_type': 'PyTorch Neural Network' if model_available else 'Heuristic Rules',

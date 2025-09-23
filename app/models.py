@@ -45,6 +45,7 @@ class ExtractRequest(BaseModel):
 class ExtractRequestEnhanced(BaseModel):
     """Enhanced extraction request with options"""
     url: str = Field(..., pattern=r"^https?://.*")
+    content: Optional[str] = Field(default=None, description="Pre-extracted content to use instead of URL extraction")
     prefer_textract: bool = Field(default=True, description="Whether to prefer Textract over DOM extraction")
     include_metadata: bool = Field(default=False, description="Whether to include extraction metadata")
 

@@ -20,13 +20,19 @@ from .enterprise_security import enterprise_security, get_enterprise_security_he
 
 # Configure enterprise logging with security audit trail
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # Reduced from INFO to WARNING for performance
     format='%(asctime)s - %(name)s - %(levelname)s - [%(module)s] %(message)s',
     handlers=[
         logging.FileHandler('tts_api_audit.log'),
         logging.StreamHandler()
     ]
 )
+
+# Reduce SQLAlchemy logging for performance
+logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
+logging.getLogger('sqlalchemy.pool').setLevel(logging.WARNING)
+logging.getLogger('sqlalchemy.dialects').setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
