@@ -1,6 +1,6 @@
 """
 COMPLETE routes.py - Backend Integration with Frontend Highlighting
-Addresses all identified issues and connects enhanced_calculations.py with frontend
+Addresses all identified issues and connects extraction_service.py with frontend
 """
 import asyncio
 import logging
@@ -24,7 +24,7 @@ from .services import (
 
 # FIXED: Import the enhanced extraction service properly with better error handling
 try:
-    from app.enhanced_calculations import enhanced_extraction_service
+    from app.extraction_service import enhanced_extraction_service
     ENHANCED_EXTRACTION_AVAILABLE = True
     logger = logging.getLogger(__name__)
     logger.info("✅ Enhanced extraction service with highlighting loaded")
@@ -242,7 +242,7 @@ async def health_check():
                     security_status = enhanced_metrics.get("security_status", {})
                     
                     services["enhanced_extraction"] = "healthy" if system_health.get("extraction_manager_healthy", False) else "degraded"
-                    services["highlighting_engine"] = "healthy" if system_health.get("highlight_generator_healthy", False) else "degraded"
+                    services["highlighting_engine"] = "healthy" if system_health.get("text_processor_healthy", False) else "degraded"
                     
                     # Update textract status from enhanced metrics if available
                     if security_status.get("textract_available", False):
