@@ -17,11 +17,15 @@ class URLValidator:
         """Enhanced URL validation for web content extraction"""
         try:
             parsed = urlparse(url)
+            
+            # Allow localhost URLs for development
+            is_localhost = parsed.netloc.startswith('localhost') or parsed.netloc.startswith('127.0.0.1')
+            
             return all([
                 parsed.scheme in ('http', 'https'),
                 parsed.netloc,
                 len(parsed.netloc) > 3,
-                '.' in parsed.netloc
+                '.' in parsed.netloc or is_localhost  # Allow localhost URLs
             ])
         except Exception:
             return False

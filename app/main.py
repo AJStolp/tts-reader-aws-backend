@@ -13,20 +13,26 @@ import time
 from .config import config, validate_security_config
 from .routes import (
     auth_router, extraction_router, tts_router, 
-    user_router, payment_router, admin_router
+    user_router, payment_router, admin_router, training_router
 )
 from .services import aws_service
 from .enterprise_security import enterprise_security, get_enterprise_security_headers
 
 # Configure enterprise logging with security audit trail
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # Reduced from INFO to WARNING for performance
     format='%(asctime)s - %(name)s - %(levelname)s - [%(module)s] %(message)s',
     handlers=[
         logging.FileHandler('tts_api_audit.log'),
         logging.StreamHandler()
     ]
 )
+
+# Reduce SQLAlchemy logging for performance
+logging.getLogger('sqlalchemy.engine').setLevel(logging.WARNING)
+logging.getLogger('sqlalchemy.pool').setLevel(logging.WARNING)
+logging.getLogger('sqlalchemy.dialects').setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
@@ -273,6 +279,9 @@ def create_app() -> FastAPI:
     
     app.include_router(admin_router, tags=["Administration - Audit Logged"])
     logger.info("✅ Admin router registered")
+    
+    app.include_router(training_router, tags=["Training Interface - ML Content Labeling"])
+    logger.info("✅ Training router registered")
     
     # Enhanced root endpoint with security information
     @app.get("/", tags=["System Information"])

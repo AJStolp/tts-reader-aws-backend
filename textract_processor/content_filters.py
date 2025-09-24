@@ -3,6 +3,7 @@ import logging
 from typing import Dict, List, Set, Optional, Tuple, Any
 from urllib.parse import urlparse
 from enum import Enum
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -31,58 +32,186 @@ class TTSContentFilter:
         self.tts_optimization_rules = self._load_tts_optimization_rules()
 
     def _load_exclusion_patterns(self) -> Dict[str, List[str]]:
-        """Comprehensive patterns for elements to exclude from TTS content"""
         return {
             "navigation": [
                 "nav", "navbar", "navigation", "menu", "menubar",
                 "breadcrumb", "breadcrumbs", "pagination", "pager",
-                "header", "footer", "sidebar", "aside", "banner"
+                "header", "footer", "sidebar", "aside", "banner",
+                "mobile-menu", "mobile-nav", "menu-toggle", "menu-button",
+                "nav-menu", "main-menu", "primary-nav", "secondary-nav"
             ],
             "interactive": [
                 "button", "btn", "form", "input", "select", "textarea",
                 "dropdown", "modal", "popup", "overlay", "tooltip",
                 "tab", "tabs", "accordion", "carousel", "slider",
-                "tts-widget", "enterprise-tts-widget"  # Explicitly exclude TTS widget
+                "tts-widget", "enterprise-tts-widget",
+                "sign-up", "sign-in", "login", "register", "auth",
+                "search", "search-box", "search-form", "filters",
+                "toggle", "switch", "checkbox", "radio"
+            ],
+            "author_metadata": [
+                "author", "byline", "bio", "profile", "user-info", "writer",
+                "contributor", "published", "publish", "date", "timestamp",
+                "read-time", "reading-time", "word-count", "meta", "metadata",
+                "author-info", "post-meta", "article-meta", "entry-meta",
+                "tags", "categories", "updated", "print", "email", "author-bio"
+            ],
+            "engagement_widgets": [
+                "vote", "clap", "like", "heart", "reaction", "engagement",
+                "interaction", "social", "share", "follow", "subscribe",
+                "bookmark", "save", "flag", "report", "responses"
+            ],
+            "ui_elements": [
+                "tooltip", "dropdown", "popup", "modal", "menu", "overlay",
+                "badge", "tag", "chip", "pill", "popover", "menuitem"
             ],
             "advertisements": [
                 "ad", "ads", "advertisement", "advertising", "sponsor",
                 "promo", "promotion", "affiliate", "banner-ad",
-                "google-ad", "adsense", "adsbygoogle"
+                "google-ad", "adsense", "adsbygoogle",
+                "ad-banner", "ad-container", "ad-slot", "ad-unit", "sponsored",
+                "pub-network", "doubleclick", "amazon-adsystem",
+                "quantserve", "outbrain", "taboola", "criteo"
             ],
             "social": [
                 "social", "share", "sharing", "follow", "subscribe",
                 "newsletter", "email-signup", "social-media",
-                "twitter", "facebook", "linkedin", "instagram"
+                "twitter", "facebook", "linkedin", "instagram",
+                "youtube", "tiktok", "pinterest", "reddit",
+                "social-icons", "social-links", "share-buttons"
             ],
             "comments": [
                 "comment", "comments", "discussion", "reply", "replies",
-                "user-content", "ugc", "review", "rating", "feedback"
-            ],
-            "metadata": [
-                "meta", "metadata", "byline", "author-bio", "tags",
-                "categories", "published", "updated", "timestamp",
-                "reading-time", "word-count", "print", "email"
+                "user-content", "ugc", "review", "rating", "feedback",
+                "disqus", "livefyre", "facebook-comments", "intensedebate"
             ],
             "related": [
                 "related", "recommended", "suggestions", "more-like-this",
-                "you-might-like", "trending", "popular", "recent"
+                "you-might-like", "trending", "popular", "recent",
+                "similar", "also-read", "recommended-posts", "related-articles"
+            ],
+            "tracking": [
+                "gtm", "google-tag-manager", "analytics", "ga", "gtag",
+                "pixel", "tracking", "tracker", "dataLayer", "tag-manager",
+                "fb-pixel", "twitter-pixel", "linkedin-insight", "hotjar",
+                "mixpanel", "segment", "amplitude", "intercom", "zendesk",
+                "optimizely", "ab-test", "experiment", "conversion"
+            ],
+            "cookies": [
+                "cookie", "cookies", "consent", "privacy", "gdpr",
+                "cookie-banner", "cookie-notice", "privacy-policy",
+                "terms", "legal", "compliance", "data-policy"
             ],
             "elearning": [
                 "vpn-switch-card", "instance-start", "target-system",
                 "download-vpn", "spawn-target", "terminal", "vm-controls",
-                "cheat-sheet", "resources", "hints"
-                # Removed "lab", "server", "progress" to preserve relevant content
+                "cheat-sheet", "resources", "hints",
+                "lab-controls", "exercise-controls", "quiz", "assessment", "progress"
             ],
             "technical": [
                 "debug", "developer", "console", "log", "error",
                 "warning", "alert", "notification", "status",
                 "loading", "spinner", "progress-bar",
-                "tts-status", "tts-progress", "tts-controls"  # TTS-specific technical elements
+                "tts-status", "tts-progress", "tts-controls",
+                "dev-tools", "inspector", "debugger", "profiler"
             ]
         }
 
+    def _get_script_source_filters(self) -> List[str]:
+        return [
+            "googletagmanager.com", "google-analytics.com", "gtag", "gtm.js",
+            "analytics.js", "ga.js", "doubleclick.net", "googlesyndication.com",
+            "amazon-adsystem.com", "quantserve.com", "facebook.net",
+            "connect.facebook.net", "fbevents.js", "twitter.com/i/adsct",
+            "linkedin.com/li.lms-analytics", "hotjar.com", "mixpanel.com",
+            "segment.com", "amplitude.com", "intercom.io", "zendesk.com",
+            "optimizely.com", "ab-testing", "fraudblocker.com", "pub.network",
+            "outbrain.com", "taboola.com", "criteo.com", "adsystem.com"
+        ]
+
+    def _get_enhanced_css_selectors(self) -> List[str]:
+        return [
+            '[role="tooltip"]',
+            '[role="button"]',
+            '[role="menuitem"]',
+            '[aria-hidden="true"]',
+            '[aria-label*="follow"]',
+            '[aria-label*="subscribe"]',
+            '[aria-label*="share"]',
+            '[aria-label*="bookmark"]',
+            '[aria-label*="like"]',
+            '[aria-label*="clap"]',
+            '[aria-label*="vote"]',
+            '[aria-label*="responses"]',
+            '[aria-label*="comment"]',
+            '[data-testid*="clap"]',
+            '[data-testid*="bookmark"]',
+            '[data-testid*="share"]',
+            '[data-testid*="author"]',
+            '[data-testid*="follow"]',
+            '[data-testid*="vote"]',
+            '[data-testid*="like"]',
+            '[data-testid*="reaction"]',
+            '[data-testid*="engagement"]',
+            '[class*="pw-multi-vote"]',
+            '[data-dd-action-name]',
+            '[class*="pw-responses"]',
+            '[class*="postActions"]',
+            '[class*="buttonSet"]',
+            '[class*="vote-arrows"]',
+            '[class*="upvote"]',
+            '[class*="downvote"]',
+            '[class*="score"]',
+            '[data-testid*="tweet"]',
+            '[data-testid*="retweet"]',
+            '[data-testid*="favorite"]',
+            '.speechify-ignore',
+            '.immersive-translate-target',
+            '[data-immersive-translate-walked]',
+            '[id*="gtm"]', '[id*="ga-"]', '[id*="google"]', '[id="tag-manager"]',
+            '[data-gtm-id]', '[data-ga-id]', '[data-analytics]', '[data-tracking]',
+            'noscript[class*="gtm"]', 'iframe[src*="googletagmanager"]'
+        ]
+
+    def generate_enhanced_removal_selectors(self, site_pattern: SitePattern) -> List[str]:
+        selectors = []
+        patterns = self.exclusion_patterns
+
+        for pattern_list in patterns.values():
+            for pattern in pattern_list:
+                selectors.extend([
+                    pattern,
+                    f'.{pattern}',
+                    f'#{pattern}',
+                    f'[class*="{pattern}"]',
+                    f'[id*="{pattern}"]'
+                ])
+
+        selectors.extend(self._get_enhanced_css_selectors())
+        
+        if site_pattern in self.site_specific_rules:
+            site_rules = self.site_specific_rules[site_pattern]
+            if "remove_selectors" in site_rules:
+                selectors.extend(site_rules["remove_selectors"])
+
+        selectors.extend([
+            "script", "style", "noscript", "iframe", "embed",
+            "object", "video", "audio", "canvas", "svg", "map", "area",
+            "iframe[id*='tag-manager']", "iframe[id*='gtm']", "iframe[id*='google']",
+            "iframe[src*='googletagmanager']", "iframe[src*='gtm']",
+            "noscript", "noscript[id*='gtm']", "noscript[class*='gtm']"
+        ])
+        
+        script_sources = self._get_script_source_filters()
+        for source in script_sources:
+            selectors.extend([
+                f'script[src*="{source}"]',
+                f'iframe[src*="{source}"]'
+            ])
+
+        return selectors
+
     def _load_content_selectors(self) -> Dict[str, int]:
-        """Content selectors ranked by priority for TTS extraction"""
         return {
             "article": 10,
             "main": 10,
@@ -107,277 +236,184 @@ class TTSContentFilter:
         }
 
     def _load_site_specific_rules(self) -> Dict[SitePattern, Dict[str, Any]]:
-        """Site-specific filtering rules for common platforms"""
         return {
             SitePattern.E_LEARNING: {
                 "preserve_selectors": [
                     ".training-module", ".lesson-content", ".chapter",
                     ".exercise", ".lab-description", ".instructions",
-                    ".module-content", ".tutorial-content"  # Preserve lab content
+                    ".module-content", ".tutorial-content"
                 ],
                 "remove_selectors": [
                     ".vpn-switch-card", ".instance-start", ".target-system",
                     ".download-vpn", ".spawn-target", ".terminal", ".vm-controls",
                     ".sidebar", ".table-of-contents", ".navigation",
                     ".cheat-sheet", ".resources", ".hints",
-                    ".tts-widget", ".enterprise-tts-widget"  # Explicitly remove TTS widget
+                    ".tts-widget", ".enterprise-tts-widget",
                 ],
                 "content_indicators": [
                     "lab", "exercise", "lesson", "chapter", "module",
-                    "tutorial", "guide", "instructions", "description"
-                ]
+                    "tutorial", "guide", "instructions", "description",
+                ],
             },
             SitePattern.DOCUMENTATION: {
                 "preserve_selectors": [
                     ".docs-content", ".documentation", ".guide",
-                    ".tutorial", ".manual", ".reference"
+                    ".tutorial", ".manual", ".reference",
                 ],
                 "remove_selectors": [
                     ".docs-nav", ".api-nav", ".version-selector",
-                    ".edit-page", ".github-link", ".search"
+                    ".edit-page", ".github-link", ".search",
                 ],
                 "content_indicators": [
                     "documentation", "docs", "guide", "tutorial",
-                    "manual", "reference", "api"
-                ]
+                    "manual", "reference", "api",
+                ],
             },
             SitePattern.BLOG: {
-                "preserve_selectors": [
-                    ".post", ".blog-post", ".article", ".entry"
-                ],
+                "preserve_selectors": [".post", ".blog-post", ".article", ".entry"],
                 "remove_selectors": [
                     ".blog-sidebar", ".widget", ".archive",
-                    ".tag-cloud", ".recent-posts", ".author-box"
-                ]
+                    ".tag-cloud", ".recent-posts", ".author-box",
+                ],
             },
             SitePattern.NEWS: {
-                "preserve_selectors": [
-                    ".story", ".article", ".news-content"
-                ],
+                "preserve_selectors": [".story", ".article", ".news-content"],
                 "remove_selectors": [
                     ".breaking-news", ".trending", ".most-read",
-                    ".newsletter-signup", ".subscription"
-                ]
-            }
+                    ".newsletter-signup", ".subscription",
+                ],
+            },
+            SitePattern.GENERIC: {},
+            SitePattern.E_COMMERCE: {},
+            SitePattern.FORUM: {},
+            SitePattern.SOCIAL: {},
         }
 
     def _load_tts_optimization_rules(self) -> Dict[str, Any]:
-        """Rules specifically for TTS content optimization"""
         return {
             "remove_phrases": [
-                "click here", "read more", "continue reading",
-                "skip to content", "jump to navigation",
-                "print this page", "email this article",
-                "share on facebook", "tweet this",
-                "subscribe to newsletter", "follow us on",
-                "accept cookies", "cookie policy",
-                "privacy policy", "terms of service",
-                "play", "pause", "stop", "read page",  # TTS widget controls
-                "volume", "speed", "backend connection", "reading progress"  # TTS widget UI
+                "click here",
+                "read more",
+                "continue reading",
+                "skip to content",
+                "jump to navigation",
+                "print this page",
+                "email this article",
+                "share on facebook",
+                "tweet this",
+                "subscribe to newsletter",
+                "follow us on",
+                "accept cookies",
+                "cookie policy",
+                "privacy policy",
+                "terms of service",
+                "play",
+                "pause",
+                "stop",
+                "read page",
+                "volume",
+                "speed",
+                "backend connection",
+                "reading progress",
+                "gtm.start",
+                "dataLayer",
+                "gtm.js",
+                "gtm_auth",
+                "gtm_preview",
+                "google-analytics",
+                "ga.js",
+                "analytics.js",
+                "ad by google",
+                "advertisement",
+                "sponsored content",
+                "tracking pixel",
+                "conversion tracking",
+                "retargeting",
+                "facebook pixel",
+                "linkedin insight tag",
+                "twitter conversion",
+                "this site requires javascript",
+                "requires javascript",
+                "This site requires JavaScript",
             ],
             "remove_patterns": [
-                r"Click\s+here\s+to\s+\w+",
-                r"Follow\s+us\s+on\s+\w+",
-                r"Subscribe\s+to\s+our\s+\w+",
-                r"Download\s+our\s+\w+\s+app",
-                r"Join\s+our\s+\w+\s+community",
-                r"Sign\s+up\s+for\s+\w+",
-                r"Get\s+\w+\s+updates",
-                r"Enable\s+\w+\s+notifications",
-                r"00:\d\d",  # Timer patterns (e.g., "00:00")
-                r"▶️|⏸️|⏹️|📄|🔊|⏱️|📶"  # TTS widget emojis
+                r'Click\s+here\s+to\s+\w+',
+                r'Follow\s+us\s+on\s+\w+',
+                r'Subscribe\s+to\s+our\s+\w+',
+                r'Download\s+our\s+\w+\s+app',
+                r'Join\s+our\s+\w+\s+community',
+                r'Sign\s+up\s+for\s+\w+',
+                r'Get\s+\w+\s+updates',
+                r'Enable\s+\w+\s+notifications',
+                r'00:\d\d',
+                r'▶️|⏸️|⏹️|📄|🔊|⏱️|📶',
+                r'gtm\.start.*?new\s+Date.*?getTime',
+                r'window\[.*?\].*?dataLayer',
+                r'GTM-[A-Z0-9]+',
+                r'ga\(["\'].*?["\'],.*?\)',
+                r'gtag\(["\'].*?["\'],.*?\)',
+                r'This\s+site\s+uses\s+cookies',
+                r'Accept\s+(all\s+)?cookies',
+                r'We\s+use\s+cookies\s+to',
+                r'<iframe[^>]*>.*?</iframe>',
+                r'<noscript[^>]*>.*?</noscript>',
+                r'<script[^>]*>.*?</script>',
+                r'<style[^>]*>.*?</style>',
+                r'iframe\s+src=["\']?[^"\'>\s]+["\']?[^>]*>',
+                r'iframe\s+src=.*?(?=\s|$)',
+                r'This\s+site\s+requires\s+JavaScript',
+                r'iframe\s+src="https?://www\.googletagmanager\.com/ns\.html\?id=GTM-\w+(&\w+=[^&]+)*"[^>]*></iframe>',
+                r'</iframe><div[^>]*>This site requires JavaScript.</div>',
+                r'</iframe>',
+                r'<div style="text-align:center;margin:\d+px;background-color:#fff">This site requires JavaScript.</div>',
             ],
             "preserve_elements": [
                 "h1", "h2", "h3", "h4", "h5", "h6",
-                "p", "div", "span",
-                "blockquote", "code", "pre",
-                "ul", "ol", "li",
-                "strong", "em", "b", "i"
+                "p", "div", "span", "blockquote", "code", "pre",
+                "ul", "ol", "li", "strong", "em", "b", "i",
             ],
             "text_processing": {
                 "min_paragraph_length": 20,
                 "max_paragraph_length": 5000,
                 "min_sentence_length": 10,
                 "remove_single_words": True,
-                "normalize_whitespace": True
-            }
+                "normalize_whitespace": True,
+            },
         }
 
-    def detect_site_pattern(self, url: str, title: str = "", description: str = "") -> SitePattern:
+    async def _remove_unwanted_elements(self, page, removal_selectors: List[str]) -> None:
         try:
-            domain = urlparse(url).netloc.lower()
-            url_path = urlparse(url).path.lower()
-            combined_text = f"{url} {title} {description}".lower()
-
-            if any(pattern in domain for pattern in [
-                "academy", "learn", "course", "training", "education",
-                "hackthebox", "coursera", "udemy", "pluralsight"
-            ]):
-                return SitePattern.E_LEARNING
-            if any(pattern in combined_text for pattern in [
-                "docs", "documentation", "api", "reference",
-                "guide", "manual", "wiki"
-            ]):
-                return SitePattern.DOCUMENTATION
-            if any(pattern in url_path for pattern in [
-                "/blog/", "/post/", "/article/"
-            ]) or "blog" in domain:
-                return SitePattern.BLOG
-            if any(pattern in domain for pattern in [
-                "news", "times", "post", "herald", "guardian",
-                "cnn", "bbc", "reuters"
-            ]):
-                return SitePattern.NEWS
-            if any(pattern in combined_text for pattern in [
-                "shop", "store", "buy", "cart", "product",
-                "amazon", "ebay", "shopify"
-            ]):
-                return SitePattern.E_COMMERCE
-            if any(pattern in combined_text for pattern in [
-                "forum", "discussion", "thread", "reddit",
-                "stackoverflow", "discourse"
-            ]):
-                return SitePattern.FORUM
-            if any(pattern in domain for pattern in [
-                "twitter", "facebook", "linkedin", "instagram",
-                "tiktok", "youtube", "reddit"
-            ]):
-                return SitePattern.SOCIAL
-            return SitePattern.GENERIC
-        except Exception as e:
-            logger.warning(f"Error detecting site pattern: {e}")
-            return SitePattern.GENERIC
-
-    async def filter_page_for_tts(self, page, url: str, title: str = "", selection_text: Optional[str] = None) -> Tuple[bool, str]:
-        """
-        Apply comprehensive content filtering to page or selection text before PDF generation
-        Returns (success: bool, filtered_text: str)
-        """
-        try:
-            if selection_text:
-                logger.info(f"Processing provided selection text: {selection_text[:30]}... ({len(selection_text)} chars)")
-                filtered_text = self._normalize_text(selection_text)
-                if self._validate_text(filtered_text):
-                    logger.info("Selection text filtering successful")
-                    return True, filtered_text
-                logger.warning("Selection text validation failed")
-                return False, ""
-
-            site_pattern = self.detect_site_pattern(url, title)
-            logger.info(f"Applying TTS content filtering for {site_pattern.value} pattern: {url}")
-
-            await self._remove_unwanted_elements(page, site_pattern)
-            await self._apply_site_specific_filtering(page, site_pattern)
-            await self._optimize_content_for_tts(page)
-            filtered_text = await self._extract_filtered_text(page)
-            content_remains = await self._validate_content_remains(page)
-
-            if content_remains:
-                logger.info(f"TTS content filtering successful for {url}")
-                return True, filtered_text
-            logger.warning(f"No meaningful content remains after filtering: {url}")
-            return False, ""
-
-        except Exception as e:
-            logger.error(f"Error during TTS content filtering: {e}")
-            return False, ""
-
-    async def _remove_unwanted_elements(self, page, site_pattern: SitePattern):
-        try:
-            selectors_to_remove = []
-            for category, patterns in self.exclusion_patterns.items():
-                for pattern in patterns:
-                    selectors_to_remove.extend([pattern, f".{pattern}", f"#{pattern}", f'[class*="{pattern}"]', f'[id*="{pattern}"]'])
-            selectors_to_remove.extend(["script", "style", "noscript", "iframe", "embed", "object", "video", "audio", "canvas", "svg", "map", "area"])
-            selectors_js = ', '.join([f'"{sel}"' for sel in selectors_to_remove])
-
-            await page.evaluate(f'''
-                () => {{
-                    const selectors = [{selectors_js}];
-                    let removedCount = 0;
-                    selectors.forEach(selector => {{
-                        try {{
-                            const elements = document.querySelectorAll(selector);
-                            elements.forEach(el => {{
-                                if (el && el.parentNode) {{
-                                    el.parentNode.removeChild(el);
-                                    removedCount++;
-                                }}
-                            }});
-                        }} catch (e) {{}}
-                    }});
-                    console.log(`Removed ${{removedCount}} unwanted elements for TTS`);
-                    return removedCount;
-                }}
-            ''')
+            await page.evaluate('''
+                () => {
+                    const selectors = %s;
+                    selectors.forEach(sel => {
+                        document.querySelectorAll(sel).forEach(el => {
+                            if (el.parentNode) el.parentNode.removeChild(el);
+                        });
+                    });
+                }
+            ''' % json.dumps(removal_selectors))
         except Exception as e:
             logger.error(f"Error removing unwanted elements: {e}")
 
-    async def _apply_site_specific_filtering(self, page, site_pattern: SitePattern):
+    async def _optimize_content_for_tts(self, page) -> None:
         try:
-            if site_pattern not in self.site_specific_rules:
-                return
-            rules = self.site_specific_rules[site_pattern]
-            if "remove_selectors" in rules:
-                remove_selectors = ', '.join([f'"{sel}"' for sel in rules["remove_selectors"]])
-                await page.evaluate(f'''
-                    () => {{
-                        const selectors = [{remove_selectors}];
-                        selectors.forEach(selector => {{
-                            try {{
-                                document.querySelectorAll(selector).forEach(el => {{
-                                    if (el && el.parentNode) {{
-                                        el.parentNode.removeChild(el);
-                                    }}
-                                }});
-                            }} catch (e) {{}}
-                        }});
-                    }}
-                ''')
-            logger.info(f"Applied {site_pattern.value} specific filtering")
-        except Exception as e:
-            logger.error(f"Error applying site-specific filtering: {e}")
-
-    async def _optimize_content_for_tts(self, page):
-        try:
-            tts_rules = self.tts_optimization_rules
-            remove_phrases = tts_rules["remove_phrases"]
-            remove_patterns = tts_rules["remove_patterns"]
-            phrases_js = ', '.join([f'"{phrase}"' for phrase in remove_phrases])
-            patterns_js = ', '.join([f'"{pattern}"' for pattern in remove_patterns])
-
-            await page.evaluate(f'''
-                () => {{
-                    const phrasesToRemove = [{phrases_js}];
-                    const patternsToRemove = [{patterns_js}];
-                    phrasesToRemove.forEach(phrase => {{
-                        const regex = new RegExp(phrase, 'gi');
-                        document.body.innerHTML = document.body.innerHTML.replace(regex, '');
-                    }});
-                    patternsToRemove.forEach(pattern => {{
-                        try {{
-                            const regex = new RegExp(pattern, 'gi');
-                            document.body.innerHTML = document.body.innerHTML.replace(regex, '');
-                        }} catch (e) {{}}
-                    }});
-                    document.querySelectorAll('*').forEach(el => {{
-                        if (el.children.length === 0 && el.textContent.trim() === '') {{
-                            if (el.parentNode) {{
-                                el.parentNode.removeChild(el);
-                            }}
-                        }}
-                    }});
-                    function normalizeWhitespace(node) {{
-                        if (node.nodeType === Node.TEXT_NODE) {{
+            await page.evaluate('''
+                () => {
+                    document.querySelectorAll('iframe, noscript, script, style').forEach(el => {
+                        if (el.parentNode) el.parentNode.removeChild(el);
+                    });
+                    function normalizeWhitespace(node) {
+                        if (node.nodeType === Node.TEXT_NODE) {
                             node.textContent = node.textContent.replace(/\\s+/g, ' ').trim();
-                        }} else {{
-                            for (let child of node.childNodes) {{
+                        } else {
+                            for (let child of node.childNodes) {
                                 normalizeWhitespace(child);
-                            }}
-                        }}
-                    }}
+                            }
+                        }
+                    }
                     normalizeWhitespace(document.body);
-                }}
+                }
             ''')
         except Exception as e:
             logger.error(f"Error optimizing content for TTS: {e}")
@@ -414,18 +450,30 @@ class TTSContentFilter:
             return False
 
     def _normalize_text(self, text: str) -> str:
-        """Normalize text for TTS processing"""
         normalized = text
+        
+        normalized = re.sub(r'<iframe[^>]*>.*?</iframe>', '', normalized, flags=re.IGNORECASE | re.DOTALL)
+        normalized = re.sub(r'iframe\s+src=["\']?[^"\'>\s]+["\']?[^>]*>', '', normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r'iframe\s+src=.*?(?=\s|$)', '', normalized, flags=re.IGNORECASE)
+        
+        normalized = re.sub(r'<noscript[^>]*>.*?</noscript>', '', normalized, flags=re.IGNORECASE | re.DOTALL)
+        normalized = re.sub(r'<script[^>]*>.*?</script>', '', normalized, flags=re.IGNORECASE | re.DOTALL)
+        normalized = re.sub(r'<style[^>]*>.*?</style>', '', normalized, flags=re.IGNORECASE | re.DOTALL)
+        
+        normalized = re.sub(r'iframe\s+src="https://www\.googletagmanager\.com[^"]*"[^>]*>', '', normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r'GTM-[A-Z0-9]+[^>]*>', '', normalized, flags=re.IGNORECASE)
+        
         for phrase in self.tts_optimization_rules["remove_phrases"]:
             normalized = normalized.replace(phrase, '')
+        
         for pattern in self.tts_optimization_rules["remove_patterns"]:
-            normalized = re.sub(pattern, '', normalized, flags=re.IGNORECASE)
+            normalized = re.sub(pattern, '', normalized, flags=re.IGNORECASE | re.DOTALL)
+        
         if self.tts_optimization_rules["text_processing"]["normalize_whitespace"]:
             normalized = re.sub(r'\s+', ' ', normalized).strip()
         return normalized
 
     async def _extract_filtered_text(self, page) -> str:
-        """Extract filtered text from page"""
         try:
             text = await page.evaluate('''
                 () => {
@@ -433,8 +481,20 @@ class TTSContentFilter:
                     let text = '';
                     selectors.forEach(selector => {
                         document.querySelectorAll(selector).forEach(el => {
-                            if (el.innerText && !el.closest('.tts-widget, .enterprise-tts-widget')) {
-                                text += el.innerText + ' ';
+                            if (el.innerText && 
+                                !el.closest('.tts-widget, .enterprise-tts-widget') &&
+                                !el.closest('.tts-ignore') &&
+                                !el.classList.contains('tts-ignore')) {
+                                const textContent = el.innerText;
+                                if (!textContent.includes('iframe src=') && 
+                                    !textContent.includes('googletagmanager') &&
+                                    !textContent.includes('GTM-') &&
+                                    !textContent.includes('This site requires JavaScript') &&
+                                    !textContent.includes('gtm_auth') &&
+                                    !textContent.includes('gtm_preview') &&
+                                    !textContent.includes('tag-manager')) {
+                                    text += textContent + ' ';
+                                }
                             }
                         });
                     });
@@ -447,7 +507,6 @@ class TTSContentFilter:
             return ""
 
     def _validate_text(self, text: str) -> bool:
-        """Validate that text is suitable for TTS"""
         try:
             word_count = len(text.split())
             return (
@@ -461,32 +520,83 @@ class TTSContentFilter:
 
     def score_content_block(self, text: str, element_info: Dict[str, str]) -> float:
         try:
-            if not text or len(text.strip()) < 20:
+            if not text or len(text.strip()) < 10:
                 return 0.0
-            score = 0.5
+            
+            # Base score starts higher
+            score = 0.3
             text_len = len(text.strip())
-            if 100 <= text_len <= 5000:
-                score += 0.2
-            elif text_len > 5000:
+            
+            # Text length scoring (more generous)
+            if text_len > 1000:  # Long content (articles)
+                score += 0.4
+            elif text_len > 200:  # Medium content
+                score += 0.3
+            elif text_len > 50:   # Short content
                 score += 0.1
-            elif text_len < 50:
-                score -= 0.3
+            elif text_len < 20:  # Very short content
+                score -= 0.2
+                
+            # HTML tag scoring
             tag_name = element_info.get("tag_name", "").lower()
-            if tag_name in ["article", "main", "section"]:
+            if tag_name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
+                score += 0.3  # Strong bonus for headings
+            elif tag_name in ["article", "main", "section"]:
                 score += 0.2
             elif tag_name in ["p", "div"]:
                 score += 0.1
+                
+            # VISUAL LAYOUT SCORING - This is the key enhancement!
+            # Use visual positioning to determine content importance
+            x_pos = element_info.get("x_position_percent", 50)
+            y_pos = element_info.get("y_position_percent", 50)
+            width_pct = element_info.get("width_percent", 50)
+            font_size = element_info.get("font_size", 16)
+            
+            # Center column content gets major bonus
+            if element_info.get("is_center_column") == 1.0:
+                score += 0.4
+                
+            # Main content area gets bonus
+            if element_info.get("is_main_content_area") == 1.0:
+                score += 0.3
+                
+            # Large font gets bonus (titles, headings)
+            if font_size > 24:
+                score += 0.2
+            elif font_size > 18:
+                score += 0.1
+                
+            # Sidebar content gets penalty
+            if element_info.get("is_right_sidebar") == 1.0 or element_info.get("is_left_sidebar") == 1.0:
+                score -= 0.4
+                
+            # Footer content gets major penalty
+            if element_info.get("is_footer_area") == 1.0:
+                score -= 0.5
+                
+            # Header area - depends on content
+            if element_info.get("is_header_area") == 1.0:
+                if text_len > 500:  # Main article in header
+                    score += 0.2
+                else:  # Navigation in header
+                    score -= 0.3
+            
+            # Class/ID indicators
             class_id = f"{element_info.get('class_name', '')} {element_info.get('id', '')}".lower()
             positive_indicators = ["content", "article", "post", "story", "main", "text"]
             for indicator in positive_indicators:
                 if indicator in class_id:
                     score += 0.1
                     break
-            negative_indicators = ["nav", "menu", "sidebar", "footer", "header", "ad"]
+                    
+            negative_indicators = ["nav", "menu", "sidebar", "footer", "header", "ad", "related", "promo"]
             for indicator in negative_indicators:
                 if indicator in class_id:
                     score -= 0.3
                     break
+            
+            # Link density penalty
             link_chars = sum(len(link) for link in re.findall(r'<a[^>]*>([^<]*)</a>', text, re.IGNORECASE))
             if text_len > 0:
                 link_density = link_chars / text_len
@@ -494,11 +604,15 @@ class TTSContentFilter:
                     score -= 0.4
                 elif link_density > 0.3:
                     score -= 0.2
+            
+            # Sentence quality
             sentences = re.split(r'[.!?]+', text)
             avg_sentence_length = sum(len(s.split()) for s in sentences) / max(len(sentences), 1)
             if 10 <= avg_sentence_length <= 30:
                 score += 0.1
+                
             return max(0.0, min(1.0, score))
+            
         except Exception as e:
             logger.error(f"Error scoring content block: {e}")
             return 0.0
@@ -511,15 +625,28 @@ class TTSContentFilter:
                         'article', 'main', '[role="main"]',
                         '.content', '.post-content', '.entry-content',
                         '.article-content', '.page-content', '.story-body',
-                        'section', '.section'
+                        'section', '.section',
+                        'h1', 'h2', 'h3', 'h4', 'h5', 'h6'  // Include headings for names/titles
                     ];
                     const areas = [];
+                    
+                    // Get viewport dimensions for visual positioning
+                    const viewportWidth = window.innerWidth;
+                    const viewportHeight = window.innerHeight;
+                    
                     contentSelectors.forEach(selector => {
                         try {
                             const elements = document.querySelectorAll(selector);
                             elements.forEach((el, index) => {
                                 const text = el.innerText || '';
-                                if (text.length > 50) {
+                                const isHeading = el.tagName.toLowerCase().match(/^h[1-6]$/);
+                                // Lower threshold for headings since they're often short
+                                const minLength = isHeading ? 10 : 50;
+                                if (text.length > minLength) {
+                                    // Get visual positioning
+                                    const rect = el.getBoundingClientRect();
+                                    const style = window.getComputedStyle(el);
+                                    
                                     areas.push({
                                         selector: selector,
                                         index: index,
@@ -529,7 +656,27 @@ class TTSContentFilter:
                                         className: el.className || '',
                                         id: el.id || '',
                                         hasHeadings: el.querySelectorAll('h1, h2, h3, h4, h5, h6').length,
-                                        hasParagraphs: el.querySelectorAll('p').length
+                                        hasParagraphs: el.querySelectorAll('p').length,
+                                        
+                                        // Visual positioning features
+                                        x: rect.left,
+                                        y: rect.top,
+                                        width: rect.width,
+                                        height: rect.height,
+                                        
+                                        // Relative positioning (as percentages)
+                                        x_percent: (rect.left / viewportWidth) * 100,
+                                        y_percent: (rect.top / viewportHeight) * 100,
+                                        width_percent: (rect.width / viewportWidth) * 100,
+                                        height_percent: (rect.height / viewportHeight) * 100,
+                                        
+                                        // CSS properties
+                                        fontSize: parseFloat(style.fontSize) || 16,
+                                        fontWeight: style.fontWeight,
+                                        
+                                        // Viewport dimensions for context
+                                        viewportWidth: viewportWidth,
+                                        viewportHeight: viewportHeight
                                     });
                                 }
                             });
@@ -543,7 +690,18 @@ class TTSContentFilter:
                 element_info = {
                     "tag_name": area["tagName"],
                     "class_name": area["className"],
-                    "id": area["id"]
+                    "id": area["id"],
+                    # Add visual positioning features for scoring
+                    "x_position_percent": area.get("x_percent", 0),
+                    "y_position_percent": area.get("y_percent", 0),
+                    "width_percent": area.get("width_percent", 0),
+                    "font_size": area.get("fontSize", 16),
+                    "is_center_column": 1.0 if area.get("x_percent", 0) >= 20 and area.get("x_percent", 0) <= 80 and area.get("width_percent", 0) > 30 else 0.0,
+                    "is_left_sidebar": 1.0 if area.get("x_percent", 0) < 25 and area.get("width_percent", 0) < 30 else 0.0,
+                    "is_right_sidebar": 1.0 if area.get("x_percent", 0) > 75 and area.get("width_percent", 0) < 30 else 0.0,
+                    "is_header_area": 1.0 if area.get("y_percent", 0) < 15 else 0.0,
+                    "is_footer_area": 1.0 if area.get("y_percent", 0) > 85 else 0.0,
+                    "is_main_content_area": 1.0 if area.get("y_percent", 0) >= 15 and area.get("y_percent", 0) <= 85 and area.get("x_percent", 0) >= 20 and area.get("x_percent", 0) <= 80 else 0.0,
                 }
                 score = self.score_content_block(area["text"], element_info)
                 area_data = {
