@@ -12,7 +12,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from sqlalchemy.orm import Session
 
-from .auth import auth_manager, get_current_user, validate_user_registration, create_user_account
+from .auth import auth_manager, get_current_user, validate_user_registration, create_user_account, verify_user_email, resend_verification_email, verify_recaptcha
 from .models import (
     UserCreate, UserLogin, UserResponse, Token, ExtractRequest, ExtractRequestEnhanced,
     ExtractResponse, ExtractResponseEnhanced, SynthesizeRequest, SynthesizeResponse,
@@ -66,12 +66,20 @@ admin_router = APIRouter(prefix="/api/admin", tags=["Administration"])
 async def register(request: Request, user_data: UserCreate, db: Session = Depends(get_db)):
     """Register a new user with enhanced validation"""
     logger.info(f"Registration attempt for username: {user_data.username}")
-    
+
+    # Verify reCAPTCHA (required)
+    recaptcha_valid = await verify_recaptcha(user_data.recaptcha_token)
+    if not recaptcha_valid:
+        raise HTTPException(
+            status_code=400,
+            detail="reCAPTCHA verification failed. Please try again."
+        )
+
     # Validate registration data
     validate_user_registration(user_data.username, user_data.email, db)
-    
+
     # Create user account
-    db_user = create_user_account(user_data.dict(), db)
+    db_user = create_user_account(user_data.model_dump(), db)
     
     return UserResponse(
         user_id=str(db_user.user_id),
@@ -89,13 +97,23 @@ async def register(request: Request, user_data: UserCreate, db: Session = Depend
 async def login(request: Request, user_data: UserLogin, db: Session = Depends(get_db)):
     """Authenticate user and return access token"""
     logger.info(f"Login attempt for username: {user_data.username}")
-    
+
+    # Verify reCAPTCHA (required)
+    recaptcha_valid = await verify_recaptcha(user_data.recaptcha_token)
+    if not recaptcha_valid:
+        raise HTTPException(
+            status_code=400,
+            detail="reCAPTCHA verification failed. Please try again."
+        )
+
     # Authenticate user
     db_user = auth_manager.authenticate_user(db, user_data.username, user_data.password)
     
     if not db_user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+        raise HTTPException(status_code=401, error="Invalid credentials")
+    print(f"{db_user.email_verified=}")
+    if not db_user.email_verified:
+        raise HTTPException(status_code=401, error="Email isn't verified")
     # Update last login
     db_user.update_last_login()
     db.commit()
@@ -111,6 +129,33 @@ async def login(request: Request, user_data: UserLogin, db: Session = Depends(ge
         token_type="bearer",
         refresh_token=refresh_token
     )
+
+@auth_router.get("/verify-email")
+async def verify_email(token: str, db: Session = Depends(get_db)):
+    """Verify user email using verification token"""
+    try:
+        result = verify_user_email(token, db)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Email verification endpoint error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@auth_router.post("/resend-verification")
+async def resend_verification(request: dict, db: Session = Depends(get_db)):
+    """Resend verification email to user"""
+    try:
+        email = request.get("email")
+        if not email:
+            raise HTTPException(status_code=400, detail="Email is required")
+        result = resend_verification_email(email, db)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Resend verification endpoint error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @auth_router.post("/token", response_model=Token)
 async def login_for_access_token(request: Request, user_data: UserLogin, db: Session = Depends(get_db)):

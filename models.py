@@ -1,5 +1,6 @@
 import uuid
-from datetime import datetime
+import secrets
+from datetime import datetime, timedelta
 from sqlalchemy import Column, String, Integer, DateTime, Boolean
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
@@ -41,6 +42,9 @@ class User(Base):
     
     # Account status and metadata
     is_active = Column(Boolean, default=True, nullable=False)
+    email_verified = Column(Boolean, default=False, nullable=False)
+    email_verification_token = Column(String(255), nullable=True)
+    email_verification_token_expires = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_login = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -149,7 +153,47 @@ class User(Base):
             self.voice_id = voice_id
         
         self.updated_at = datetime.utcnow()
-    
+
+    def generate_email_verification_token(self) -> str:
+        """
+        Generate a secure email verification token.
+
+        Returns:
+            str: The generated verification token
+        """
+        token = secrets.token_urlsafe(32)
+        self.email_verification_token = token
+        self.email_verification_token_expires = datetime.utcnow() + timedelta(hours=24)
+        return token
+
+    def verify_email_token(self, token: str) -> bool:
+        """
+        Verify the email verification token.
+
+        Args:
+            token (str): The token to verify
+
+        Returns:
+            bool: True if token is valid and not expired, False otherwise
+        """
+        if not self.email_verification_token or not self.email_verification_token_expires:
+            return False
+
+        if datetime.utcnow() > self.email_verification_token_expires:
+            return False
+
+        if self.email_verification_token != token:
+            return False
+
+        return True
+
+    def mark_email_verified(self) -> None:
+        """Mark the user's email as verified and clear verification token."""
+        self.email_verified = True
+        self.email_verification_token = None
+        self.email_verification_token_expires = None
+        self.updated_at = datetime.utcnow()
+
     def to_dict(self, include_sensitive: bool = False) -> dict:
         """
         Convert user object to dictionary.
@@ -170,6 +214,7 @@ class User(Base):
             "engine": self.engine,
             "voice_id": self.voice_id,
             "is_active": self.is_active,
+            "email_verified": self.email_verified,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "last_login": self.last_login.isoformat() if self.last_login else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

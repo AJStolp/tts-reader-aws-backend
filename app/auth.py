@@ -2,7 +2,12 @@
 Authentication and security utilities for TTS Reader API
 """
 import logging
+import smtplib
+import asyncio
+import httpx
 from datetime import datetime, timedelta, timezone
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -66,22 +71,29 @@ class AuthManager:
                 headers={"WWW-Authenticate": "Bearer"},
             )
     
-    def authenticate_user(self, db: Session, username: str, password: str) -> Optional[User]:
+    def authenticate_user(self, db: Session, username: str, password: str, require_email_verification: bool = True) -> Optional[User]:
         """Authenticate user credentials"""
         user = db.query(User).filter(User.username == username).first()
-        
+
         if not user:
             logger.warning(f"Login failed - user not found: {username}")
             return None
-        
+
         if not user.check_password(password):
             logger.warning(f"Login failed - incorrect password for user: {username}")
             return None
-        
+
         if not user.is_active:
             logger.warning(f"Login failed - user account disabled: {username}")
             return None
-        
+
+        if require_email_verification and not user.email_verified:
+            logger.warning(f"Login failed - email not verified for user: {username}")
+            raise HTTPException(
+                status_code=403,
+                detail="Email verification required. Please check your email and verify your account."
+            )
+
         return user
     
     def get_current_user(self, token: str, db: Session) -> User:
@@ -99,14 +111,187 @@ class AuthManager:
             raise credentials_exception
         
         user = db.query(User).filter(
-            User.username == username, 
+            User.username == username,
             User.is_active == True
         ).first()
-        
+
         if user is None:
             raise credentials_exception
-        
+
+        if not user.email_verified:
+            raise HTTPException(
+                status_code=403,
+                detail="Email verification required. Please verify your email to access this resource."
+            )
+
         return user
+
+    def send_verification_email(self, user: User, verification_token: str) -> bool:
+        """Send email verification email to user"""
+        try:
+            print(f"DEBUG: Starting email send process...")
+            print(f"DEBUG: SMTP_HOST={config.SMTP_HOST}")
+            print(f"DEBUG: SMTP_PORT={config.SMTP_PORT}")
+            print(f"DEBUG: SMTP_USERNAME={config.SMTP_USERNAME}")
+            print(f"DEBUG: SMTP_USE_TLS={config.SMTP_USE_TLS}")
+
+            if not all([config.SMTP_HOST, config.SMTP_USERNAME, config.SMTP_PASSWORD]):
+                logger.warning("SMTP configuration incomplete, cannot send verification email")
+                return False
+
+            # Create verification URL
+            verification_url = f"http://localhost:5000/verify-email?token={verification_token}"
+            print(f"{verification_url=}")
+
+            # Create message
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = "Verify your TTS Reader account"
+            msg['From'] = "tts@logantaylorandkitties.com"
+            msg['To'] = user.email
+            print(f"DEBUG: Message created for {user.email}")
+
+            # Create HTML content
+            html_content = f"""
+            <html>
+                <body>
+                    <h2>Welcome to TTS Reader!</h2>
+                    <p>Hi {user.first_name or user.username},</p>
+                    <p>Thank you for signing up for TTS Reader. To complete your registration, please verify your email address by clicking the link below:</p>
+                    <p><a href="{verification_url}" style="background-color: #4CAF50; color: white; padding: 14px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">Verify Email Address</a></p>
+                    <p>If the button doesn't work, you can copy and paste this link into your browser:</p>
+                    <p>{verification_url}</p>
+                    <p>This verification link will expire in 24 hours.</p>
+                    <p>If you didn't create an account with TTS Reader, you can safely ignore this email.</p>
+                    <br>
+                    <p>Best regards,<br>The TTS Reader Team</p>
+                </body>
+            </html>
+            """
+
+            # Create text content
+            text_content = f"""
+            Welcome to TTS Reader!
+
+            Hi {user.first_name or user.username},
+
+            Thank you for signing up for TTS Reader. To complete your registration, please verify your email address by visiting this link:
+
+            {verification_url}
+
+            This verification link will expire in 24 hours.
+
+            If you didn't create an account with TTS Reader, you can safely ignore this email.
+
+            Best regards,
+            The TTS Reader Team
+            """
+
+            # Attach parts
+            part1 = MIMEText(text_content, 'plain')
+            part2 = MIMEText(html_content, 'html')
+            msg.attach(part1)
+            msg.attach(part2)
+
+            # Send email with timeout
+            print(f"DEBUG: Attempting SMTP connection...")
+            try:
+                # Use SMTP_SSL for port 465, SMTP for port 587
+                if config.SMTP_PORT == 465:
+                    print(f"DEBUG: Using SMTP_SSL for port 465")
+                    server_class = smtplib.SMTP_SSL
+                    use_starttls = False
+                else:
+                    print(f"DEBUG: Using SMTP for port {config.SMTP_PORT}")
+                    server_class = smtplib.SMTP
+                    use_starttls = config.SMTP_USE_TLS
+
+                with server_class(config.SMTP_HOST, config.SMTP_PORT, timeout=10) as server:
+                    print(f"DEBUG: SMTP connection established")
+                    server.set_debuglevel(1)  # Enable debug output
+
+                    if use_starttls:
+                        print(f"DEBUG: Starting TLS...")
+                        server.starttls()
+                        print(f"DEBUG: TLS established")
+
+                    print(f"DEBUG: Attempting login...")
+                    server.login(config.SMTP_USERNAME, config.SMTP_PASSWORD)
+                    print(f"DEBUG: Login successful")
+
+                    print(f"DEBUG: Sending message...")
+                    server.send_message(msg)
+                    print(f"DEBUG: Message sent successfully")
+
+                logger.info(f"Verification email sent to {user.email}")
+                return True
+
+            except smtplib.SMTPAuthenticationError as e:
+                logger.error(f"SMTP Authentication failed: {str(e)}")
+                print(f"DEBUG: SMTP Authentication Error - check username/password")
+                return False
+            except smtplib.SMTPConnectError as e:
+                logger.error(f"SMTP Connection failed: {str(e)}")
+                print(f"DEBUG: SMTP Connection Error - check host/port")
+                return False
+            except smtplib.SMTPException as e:
+                logger.error(f"SMTP Error: {str(e)}")
+                print(f"DEBUG: General SMTP Error: {str(e)}")
+                return False
+            except ConnectionRefusedError as e:
+                logger.error(f"Connection refused: {str(e)}")
+                print(f"DEBUG: Connection refused - server may be down")
+                return False
+            except Exception as e:
+                logger.error(f"Unexpected error during email send: {str(e)}")
+                print(f"DEBUG: Unexpected error: {type(e).__name__}: {str(e)}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to send verification email to {user.email}: {str(e)}")
+            print(f"DEBUG: Outer exception: {type(e).__name__}: {str(e)}")
+            return False
+
+async def verify_recaptcha(recaptcha_token: str) -> bool:
+    """Verify reCAPTCHA token with Google's API"""
+    try:
+        if not config.RECAPTCHA_SECRET_KEY:
+            logger.warning("reCAPTCHA secret key not configured, verification disabled")
+            return True  # Allow in development if not configured
+
+        if not recaptcha_token or not recaptcha_token.strip():
+            logger.warning("Empty or missing reCAPTCHA token provided")
+            return False
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                config.RECAPTCHA_VERIFY_URL,
+                data={
+                    'secret': config.RECAPTCHA_SECRET_KEY,
+                    'response': recaptcha_token
+                },
+                timeout=10.0
+            )
+
+            if response.status_code != 200:
+                logger.error(f"reCAPTCHA API request failed with status {response.status_code}")
+                return False
+
+            result = response.json()
+
+            if result.get('success'):
+                logger.info("reCAPTCHA verification successful")
+                return True
+            else:
+                errors = result.get('error-codes', [])
+                logger.warning(f"reCAPTCHA verification failed: {errors}")
+                return False
+
+    except httpx.TimeoutException:
+        logger.error("reCAPTCHA verification timeout")
+        return False
+    except Exception as e:
+        logger.error(f"reCAPTCHA verification error: {str(e)}")
+        return False
 
 # Global auth manager instance
 auth_manager = AuthManager()
@@ -138,7 +323,7 @@ def validate_user_registration(username: str, email: str, db: Session) -> None:
         )
 
 def create_user_account(user_data: dict, db: Session) -> User:
-    """Create a new user account"""
+    """Create a new user account with email verification"""
     try:
         # Create new user
         db_user = User(
@@ -147,21 +332,121 @@ def create_user_account(user_data: dict, db: Session) -> User:
             first_name=user_data["first_name"],
             last_name=user_data["last_name"]
         )
-        
+
         # Set password using the model method
         db_user.set_password(user_data["password"])
-        
+
+        # Generate email verification token
+        print(f"email verification token about to be created")
+        verification_token = db_user.generate_email_verification_token()
+
         db.add(db_user)
         db.commit()
         db.refresh(db_user)
-        
+
+        # Send verification email
+        print(f"email about to be sent")
+        email_sent = auth_manager.send_verification_email(db_user, verification_token)
+        if not email_sent:
+            logger.warning(f"Failed to send verification email to {db_user.email}")
+
         logger.info(f"User {user_data['username']} registered successfully")
         return db_user
-        
+
     except Exception as e:
         logger.error(f"Registration error for {user_data['username']}: {str(e)}")
         db.rollback()
         raise HTTPException(
             status_code=500,
             detail="An error occurred during registration"
+        )
+
+def verify_user_email(token: str, db: Session) -> dict:
+    """Verify user email using verification token"""
+    try:
+        # Find user with this verification token
+        user = db.query(User).filter(
+            User.email_verification_token == token,
+            User.email_verification_token_expires.isnot(None)
+        ).first()
+
+        if not user:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid or expired verification token"
+            )
+
+        # Verify the token
+        if not user.verify_email_token(token):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid or expired verification token"
+            )
+
+        # Mark email as verified
+        user.mark_email_verified()
+        db.commit()
+
+        logger.info(f"Email verified successfully for user: {user.username}")
+        return {
+            "message": "Email verified successfully",
+            "user_id": str(user.user_id),
+            "username": user.username
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Email verification error: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred during email verification"
+        )
+
+def resend_verification_email(email: str, db: Session) -> dict:
+    """Resend verification email to user"""
+    try:
+        # Find user by email
+        user = db.query(User).filter(User.email == email).first()
+
+        if not user:
+            raise HTTPException(
+                status_code=404,
+                detail="User not found"
+            )
+
+        if user.email_verified:
+            raise HTTPException(
+                status_code=400,
+                detail="Email is already verified"
+            )
+
+        # Generate new verification token
+        verification_token = user.generate_email_verification_token()
+        db.commit()
+
+        # Send verification email
+        email_sent = auth_manager.send_verification_email(user, verification_token)
+        if not email_sent:
+            logger.error(f"Failed to resend verification email to {user.email}")
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to send verification email"
+            )
+
+        logger.info(f"Verification email resent to {user.email}")
+        return {
+            "message": "Verification email sent successfully",
+            "email": user.email
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Resend verification email error: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="An error occurred while resending verification email"
         )
