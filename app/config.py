@@ -189,6 +189,10 @@ class EnterpriseConfig(BaseSettings):
     SMTP_USERNAME: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
     SMTP_USE_TLS: bool = True
+
+    # reCAPTCHA Configuration
+    RECAPTCHA_SECRET_KEY: Optional[str] = None
+    RECAPTCHA_VERIFY_URL: str = "https://www.google.com/recaptcha/api/siteverify"
     
     # Notification Settings
     SECURITY_ALERT_EMAIL: Optional[str] = None

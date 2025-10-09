@@ -44,3 +44,9 @@ dist/
 
 # Node (if you have any frontend assets)
 node_modules/
+
+__pycache__/
+
+*/__pycache__
+
+.python-version
