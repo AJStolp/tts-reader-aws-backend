@@ -118,11 +118,12 @@ class AuthManager:
         if user is None:
             raise credentials_exception
 
-        if not user.email_verified:
-            raise HTTPException(
-                status_code=403,
-                detail="Email verification required. Please verify your email to access this resource."
-            )
+        # TEMPORARILY DISABLED - Email verification check for API access
+        # if not user.email_verified:
+        #     raise HTTPException(
+        #         status_code=403,
+        #         detail="Email verification required. Please verify your email to access this resource."
+        #     )
 
         return user
 
