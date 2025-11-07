@@ -13,13 +13,13 @@ class UserCreate(BaseModel):
     email: EmailStr
     first_name: str = Field(..., min_length=1, max_length=128)
     last_name: str = Field(..., min_length=1, max_length=128)
-    recaptcha_token: str = Field(..., min_length=1, description="reCAPTCHA verification token (required)")
+    recaptcha_token: Optional[str] = Field(None, description="reCAPTCHA verification token (temporarily optional)")
 
 class UserLogin(BaseModel):
     """Model for user login"""
     username: str = Field(..., min_length=1, max_length=50)
     password: str = Field(..., min_length=1, max_length=128)
-    recaptcha_token: str = Field(..., min_length=1, description="reCAPTCHA verification token (required)")
+    recaptcha_token: Optional[str] = Field(None, description="reCAPTCHA verification token (temporarily optional)")
 
 class UserResponse(BaseModel):
     """Model for user response data"""

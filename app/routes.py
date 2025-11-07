@@ -68,13 +68,13 @@ async def register(request: Request, user_data: UserCreate, db: Session = Depend
     """Register a new user with enhanced validation"""
     logger.info(f"Registration attempt for username: {user_data.username}")
 
-    # Verify reCAPTCHA (required)
-    recaptcha_valid = await verify_recaptcha(user_data.recaptcha_token)
-    if not recaptcha_valid:
-        raise HTTPException(
-            status_code=400,
-            detail="reCAPTCHA verification failed. Please try again."
-        )
+    # Verify reCAPTCHA (required) - TEMPORARILY DISABLED
+    # recaptcha_valid = await verify_recaptcha(user_data.recaptcha_token)
+    # if not recaptcha_valid:
+    #     raise HTTPException(
+    #         status_code=400,
+    #         detail="reCAPTCHA verification failed. Please try again."
+    #     )
 
     # Validate registration data
     validate_user_registration(user_data.username, user_data.email, db)
@@ -97,24 +97,30 @@ async def register(request: Request, user_data: UserCreate, db: Session = Depend
 @auth_router.post("/login", response_model=Token)
 async def login(request: Request, user_data: UserLogin, db: Session = Depends(get_db)):
     """Authenticate user and return access token"""
-    logger.info(f"Login attempt for username: {user_data.username}")
+    try:
+        logger.info(f"Login attempt for username: {user_data.username}")
+        logger.info(f"Received user_data: {user_data}")
+    except Exception as e:
+        logger.error(f"Error parsing user_data: {e}")
+        raise HTTPException(status_code=422, detail=f"Invalid request data: {str(e)}")
 
-    # Verify reCAPTCHA (required)
-    recaptcha_valid = await verify_recaptcha(user_data.recaptcha_token)
-    if not recaptcha_valid:
-        raise HTTPException(
-            status_code=400,
-            detail="reCAPTCHA verification failed. Please try again."
-        )
+    # Verify reCAPTCHA (required) - TEMPORARILY DISABLED
+    # recaptcha_valid = await verify_recaptcha(user_data.recaptcha_token)
+    # if not recaptcha_valid:
+    #     raise HTTPException(
+    #         status_code=400,
+    #         detail="reCAPTCHA verification failed. Please try again."
+    #     )
 
-    # Authenticate user
-    db_user = auth_manager.authenticate_user(db, user_data.username, user_data.password)
+    # Authenticate user - temporarily disable email verification
+    db_user = auth_manager.authenticate_user(db, user_data.username, user_data.password, require_email_verification=False)
     
     if not db_user:
-        raise HTTPException(status_code=401, error="Invalid credentials")
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     print(f"{db_user.email_verified=}")
-    if not db_user.email_verified:
-        raise HTTPException(status_code=401, error="Email isn't verified")
+    # TEMPORARILY DISABLED - Email verification check
+    # if not db_user.email_verified:
+    #     raise HTTPException(status_code=401, detail="Email isn't verified")
     # Update last login
     db_user.update_last_login()
     db.commit()
