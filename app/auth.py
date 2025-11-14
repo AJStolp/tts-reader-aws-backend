@@ -4,7 +4,6 @@ Authentication and security utilities for TTS Reader API
 import logging
 import smtplib
 import asyncio
-import httpx
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -251,48 +250,6 @@ class AuthManager:
             logger.error(f"Failed to send verification email to {user.email}: {str(e)}")
             print(f"DEBUG: Outer exception: {type(e).__name__}: {str(e)}")
             return False
-
-async def verify_recaptcha(recaptcha_token: str) -> bool:
-    """Verify reCAPTCHA token with Google's API"""
-    try:
-        if not config.RECAPTCHA_SECRET_KEY:
-            logger.warning("reCAPTCHA secret key not configured, verification disabled")
-            return True  # Allow in development if not configured
-
-        if not recaptcha_token or not recaptcha_token.strip():
-            logger.warning("Empty or missing reCAPTCHA token provided")
-            return False
-
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                config.RECAPTCHA_VERIFY_URL,
-                data={
-                    'secret': config.RECAPTCHA_SECRET_KEY,
-                    'response': recaptcha_token
-                },
-                timeout=10.0
-            )
-
-            if response.status_code != 200:
-                logger.error(f"reCAPTCHA API request failed with status {response.status_code}")
-                return False
-
-            result = response.json()
-
-            if result.get('success'):
-                logger.info("reCAPTCHA verification successful")
-                return True
-            else:
-                errors = result.get('error-codes', [])
-                logger.warning(f"reCAPTCHA verification failed: {errors}")
-                return False
-
-    except httpx.TimeoutException:
-        logger.error("reCAPTCHA verification timeout")
-        return False
-    except Exception as e:
-        logger.error(f"reCAPTCHA verification error: {str(e)}")
-        return False
 
 # Global auth manager instance
 auth_manager = AuthManager()

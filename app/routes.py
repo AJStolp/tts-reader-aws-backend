@@ -9,10 +9,10 @@ from datetime import datetime, timedelta
 from typing import Any, Dict
 
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, UploadFile, File, Form
 from sqlalchemy.orm import Session
 
-from .auth import auth_manager, get_current_user, validate_user_registration, create_user_account, verify_user_email, resend_verification_email, verify_recaptcha
+from .auth import auth_manager, get_current_user, validate_user_registration, create_user_account, verify_user_email, resend_verification_email
 from .models import (
     UserCreate, UserLogin, UserResponse, Token, ExtractRequest, ExtractRequestEnhanced,
     ExtractResponse, ExtractResponseEnhanced, SynthesizeRequest, SynthesizeResponse,
@@ -68,14 +68,6 @@ async def register(request: Request, user_data: UserCreate, db: Session = Depend
     """Register a new user with enhanced validation"""
     logger.info(f"Registration attempt for username: {user_data.username}")
 
-    # Verify reCAPTCHA (required) - TEMPORARILY DISABLED
-    # recaptcha_valid = await verify_recaptcha(user_data.recaptcha_token)
-    # if not recaptcha_valid:
-    #     raise HTTPException(
-    #         status_code=400,
-    #         detail="reCAPTCHA verification failed. Please try again."
-    #     )
-
     # Validate registration data
     validate_user_registration(user_data.username, user_data.email, db)
 
@@ -103,14 +95,6 @@ async def login(request: Request, user_data: UserLogin, db: Session = Depends(ge
     except Exception as e:
         logger.error(f"Error parsing user_data: {e}")
         raise HTTPException(status_code=422, detail=f"Invalid request data: {str(e)}")
-
-    # Verify reCAPTCHA (required) - TEMPORARILY DISABLED
-    # recaptcha_valid = await verify_recaptcha(user_data.recaptcha_token)
-    # if not recaptcha_valid:
-    #     raise HTTPException(
-    #         status_code=400,
-    #         detail="reCAPTCHA verification failed. Please try again."
-    #     )
 
     # Authenticate user - temporarily disable email verification
     db_user = auth_manager.authenticate_user(db, user_data.username, user_data.password, require_email_verification=False)
@@ -609,30 +593,70 @@ async def test_aws_simple():
             "aws_configured": False
         }
 
-# Text-to-Speech endpoints - ENHANCED
+# Text-to-Speech endpoints - ENHANCED WITH TIER LIMITS
 @tts_router.post("/synthesize", response_model=SynthesizeResponse)
 async def synthesize_text(
     request: SynthesizeRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    response: Response = None
 ):
-    """Synthesize text to speech using Amazon Polly"""
+    """Synthesize text to speech using Amazon Polly with tier-based limits"""
     try:
         # Support both field names for backwards compatibility
         text_content = getattr(request, 'text_to_speech', None) or getattr(request, 'text', None)
-        
+
         if not text_content:
             raise HTTPException(status_code=400, detail="Text content is required")
-        
-        return await tts_service.synthesize_text(
-            text_content, 
-            request.voice_id, 
-            request.engine, 
-            current_user, 
+
+        result = await tts_service.synthesize_text(
+            text_content,
+            request.voice_id,
+            request.engine,
+            current_user,
             db
         )
+
+        # Add warning header if user is near limit (80%)
+        if result.is_near_limit:
+            response.headers["X-Usage-Warning"] = f"You have used {result.usage_percentage}% of your monthly limit"
+
+        return result
+
     except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        error_msg = str(e)
+
+        # Check if it's a limit exceeded error
+        if "limit reached" in error_msg.lower() or "monthly limit" in error_msg.lower():
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error": "Monthly character limit exceeded",
+                    "message": error_msg,
+                    "monthly_usage": current_user.monthly_usage,
+                    "monthly_cap": current_user.get_monthly_cap(),
+                    "usage_percentage": round(current_user.get_usage_percentage(), 2),
+                    "reset_date": current_user.usage_reset_date.isoformat() if current_user.usage_reset_date else None,
+                    "tier": current_user.tier.value.lower(),
+                    "upgrade_required": True
+                }
+            )
+
+        # Check if it's a tier restriction error
+        if "tier does not support" in error_msg.lower() or "upgrade" in error_msg.lower():
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "Feature not available in your tier",
+                    "message": error_msg,
+                    "current_tier": current_user.tier.value.lower(),
+                    "upgrade_required": True
+                }
+            )
+
+        # Other ValueError (e.g., validation errors)
+        raise HTTPException(status_code=400, detail=error_msg)
+
     except Exception as e:
         logger.error(f"Synthesis error for user {current_user.username}: {str(e)}")
         raise HTTPException(status_code=500, detail="An error occurred during text synthesis")
@@ -806,25 +830,63 @@ async def get_usage(
             "error": "Could not fetch enhanced usage statistics"
         }
 
-# Payment endpoints - COMPLETE
+# Payment endpoints - WITH TIER SUPPORT
+@payment_router.get("/pricing-tiers")
+async def get_pricing_tiers():
+    """Get available pricing tiers and features"""
+    from .config import TierConfig
+
+    return {
+        "tiers": TierConfig.TIER_INFO,
+        "neural_enabled": config.NEURAL_VOICES_ENABLED,
+        "features_comparison": {
+            "free": {
+                "name": "Free",
+                "voice_engine": "Web Speech API",
+                "monthly_cap": "Unlimited",
+                "speech_marks": False,
+                "priority_support": False
+            },
+            "premium": {
+                "name": "Premium",
+                "voice_engine": "AWS Polly Standard",
+                "monthly_cap": "2,000,000 characters",
+                "speech_marks": True,
+                "priority_support": False
+            },
+            "pro": {
+                "name": "Pro",
+                "voice_engine": "AWS Polly Standard + Neural (coming soon)",
+                "monthly_cap": "10,000,000 characters",
+                "speech_marks": True,
+                "priority_support": True
+            }
+        }
+    }
+
 @payment_router.post("/create-checkout-session")
 async def create_checkout_session(
     request: StripeCheckoutRequest,
     current_user: User = Depends(get_current_user)
 ):
-    """Create a Stripe checkout session for subscription"""
+    """Create a Stripe checkout session for subscription with tier tracking"""
     try:
-        url = await stripe_service.create_checkout_session(request.price_id, current_user.username)
+        url = await stripe_service.create_checkout_session(
+            request.price_id,
+            current_user.username,
+            current_user.email
+        )
         return {"url": url}
     except Exception as e:
+        logger.error(f"Checkout session creation failed: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to create checkout session")
 
 @payment_router.post("/stripe_webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    """Handle Stripe webhook events"""
+    """Handle Stripe webhook events with tier management"""
     payload = await request.body()
     sig_header = request.headers.get("Stripe-Signature")
-    
+
     try:
         return stripe_service.handle_webhook_event(payload, sig_header, db)
     except ValueError as e:
