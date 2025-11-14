@@ -55,6 +55,26 @@ class EnterpriseConfig(BaseSettings):
     MAX_POLLY_CHARS: int = 3000
     DEFAULT_VOICE_ID: str = "Joanna"
     DEFAULT_ENGINE: str = "neural"
+
+    # Pricing & Tier Configuration
+    TIER_FREE_MONTHLY_CAP: int = 0  # Unlimited (web speech API only)
+    TIER_PREMIUM_MONTHLY_CAP: int = 2_000_000  # 2M characters
+    TIER_PRO_MONTHLY_CAP: int = 10_000_000  # 10M characters
+
+    TIER_PREMIUM_PRICE_MONTHLY: float = 14.00
+    TIER_PREMIUM_PRICE_YEARLY: float = 139.99
+    TIER_PRO_PRICE_MONTHLY: float = 34.00
+    TIER_PRO_PRICE_YEARLY: float = 299.99
+
+    # Stripe Price IDs (set these in .env for production)
+    STRIPE_PRICE_ID_PREMIUM_MONTHLY: str = os.getenv("STRIPE_PRICE_ID_PREMIUM_MONTHLY", "")
+    STRIPE_PRICE_ID_PREMIUM_YEARLY: str = os.getenv("STRIPE_PRICE_ID_PREMIUM_YEARLY", "")
+    STRIPE_PRICE_ID_PRO_MONTHLY: str = os.getenv("STRIPE_PRICE_ID_PRO_MONTHLY", "")
+    STRIPE_PRICE_ID_PRO_YEARLY: str = os.getenv("STRIPE_PRICE_ID_PRO_YEARLY", "")
+
+    # Feature Flags
+    NEURAL_VOICES_ENABLED: bool = False  # Disabled at launch, enable later for Pro users
+    USAGE_WARNING_THRESHOLD: float = 80.0  # Warn at 80% usage
     
     # Stripe Configuration
     STRIPE_API_KEY: str = ""
@@ -190,10 +210,6 @@ class EnterpriseConfig(BaseSettings):
     SMTP_PASSWORD: Optional[str] = None
     SMTP_USE_TLS: bool = True
 
-    # reCAPTCHA Configuration
-    RECAPTCHA_SECRET_KEY: Optional[str] = None
-    RECAPTCHA_VERIFY_URL: str = "https://www.google.com/recaptcha/api/siteverify"
-    
     # Notification Settings
     SECURITY_ALERT_EMAIL: Optional[str] = None
     ADMIN_ALERT_EMAIL: Optional[str] = None
@@ -396,9 +412,90 @@ class SecurityConfig:
         "MALWARE_DETECTED": "CRITICAL"
     }
 
+class TierConfig:
+    """Tier configuration for pricing and features"""
+
+    TIER_INFO = {
+        "free": {
+            "name": "Free",
+            "price_monthly": 0,
+            "price_yearly": 0,
+            "monthly_cap": 0,  # Unlimited
+            "features": {
+                "web_speech_api": True,
+                "aws_polly_standard": False,
+                "aws_polly_neural": False,
+                "speech_marks": False,
+                "priority_support": False
+            },
+            "stripe_price_ids": {}
+        },
+        "premium": {
+            "name": "Premium",
+            "price_monthly": 14.00,
+            "price_yearly": 139.99,
+            "monthly_cap": 2_000_000,
+            "features": {
+                "web_speech_api": True,
+                "aws_polly_standard": True,
+                "aws_polly_neural": False,  # Reserved for Pro
+                "speech_marks": True,
+                "priority_support": False
+            },
+            "stripe_price_ids": {
+                "monthly": os.getenv("STRIPE_PRICE_ID_PREMIUM_MONTHLY", ""),
+                "yearly": os.getenv("STRIPE_PRICE_ID_PREMIUM_YEARLY", "")
+            },
+            "estimated_aws_cost": 8.00,
+            "profit_margin": 6.00
+        },
+        "pro": {
+            "name": "Pro",
+            "price_monthly": 34.00,
+            "price_yearly": 299.99,
+            "monthly_cap": 10_000_000,
+            "features": {
+                "web_speech_api": True,
+                "aws_polly_standard": True,
+                "aws_polly_neural": True,  # Pro only (when enabled)
+                "speech_marks": True,
+                "priority_support": True
+            },
+            "stripe_price_ids": {
+                "monthly": os.getenv("STRIPE_PRICE_ID_PRO_MONTHLY", ""),
+                "yearly": os.getenv("STRIPE_PRICE_ID_PRO_YEARLY", "")
+            },
+            "estimated_aws_cost": 40.00,
+            "profit_margin": 16.00
+        }
+    }
+
+    @staticmethod
+    def get_tier_info(tier: str) -> dict:
+        """Get tier information"""
+        return TierConfig.TIER_INFO.get(tier.lower(), TierConfig.TIER_INFO["free"])
+
+    @staticmethod
+    def get_monthly_cap(tier: str) -> int:
+        """Get monthly character cap for tier"""
+        return TierConfig.get_tier_info(tier).get("monthly_cap", 0)
+
+    @staticmethod
+    def can_use_engine(tier: str, engine: str) -> bool:
+        """Check if tier can use specific engine"""
+        tier_info = TierConfig.get_tier_info(tier)
+        features = tier_info.get("features", {})
+
+        if engine == "standard":
+            return features.get("aws_polly_standard", False)
+        elif engine == "neural":
+            return features.get("aws_polly_neural", False)
+
+        return False
+
 class PerformanceConfig:
     """Performance and optimization configuration"""
-    
+
     # Connection Pools
     DB_POOL_SIZE = 20
     DB_MAX_OVERFLOW = 30
@@ -496,7 +593,8 @@ def get_environment_info():
 # Export commonly used configurations
 __all__ = [
     "config",
-    "SecurityConfig", 
+    "SecurityConfig",
+    "TierConfig",
     "PerformanceConfig",
     "validate_security_config",
     "get_environment_info"

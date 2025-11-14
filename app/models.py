@@ -13,13 +13,11 @@ class UserCreate(BaseModel):
     email: EmailStr
     first_name: str = Field(..., min_length=1, max_length=128)
     last_name: str = Field(..., min_length=1, max_length=128)
-    recaptcha_token: Optional[str] = Field(None, description="reCAPTCHA verification token (temporarily optional)")
 
 class UserLogin(BaseModel):
     """Model for user login"""
     username: str = Field(..., min_length=1, max_length=50)
     password: str = Field(..., min_length=1, max_length=128)
-    recaptcha_token: Optional[str] = Field(None, description="reCAPTCHA verification token (temporarily optional)")
 
 class UserResponse(BaseModel):
     """Model for user response data"""
@@ -98,14 +96,21 @@ class SynthesizeRequest(BaseModel):
     engine: str = Field(default="standard", pattern="^(standard|neural)$")
 
 class SynthesizeResponse(BaseModel):
-    """Model for TTS synthesis response"""
+    """Model for TTS synthesis response with tier-based usage tracking"""
     audio_url: str
     speech_marks: List[Dict[str, Any]] = Field(default_factory=list, description="Clean AWS Polly speech marks")
     characters_used: int
-    remaining_chars: int
+    remaining_chars: int  # Legacy field
     duration_seconds: float
     voice_used: Optional[str] = None
     engine_used: Optional[str] = None
+    # New tier-based usage fields
+    monthly_usage: Optional[int] = None
+    monthly_cap: Optional[int] = None
+    usage_percentage: Optional[float] = None
+    usage_reset_date: Optional[str] = None
+    tier: Optional[str] = None
+    is_near_limit: Optional[bool] = None
 
 # User preferences models
 class PreferencesUpdate(BaseModel):

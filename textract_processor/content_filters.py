@@ -368,7 +368,8 @@ class TTSContentFilter:
                 r'<div style="text-align:center;margin:\d+px;background-color:#fff">This site requires JavaScript.</div>',
             ],
             "preserve_elements": [
-                "h1", "h2", "h3", "h4", "h5", "h6",
+                ""
+                "", "h2", "h3", "h4", "h5", "h6",
                 "p", "div", "span", "blockquote", "code", "pre",
                 "ul", "ol", "li", "strong", "em", "b", "i",
             ],

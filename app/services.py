@@ -16,7 +16,7 @@ from botocore.exceptions import ClientError, NoCredentialsError
 from pydub import AudioSegment
 from sqlalchemy.orm import Session
 
-from .config import config
+from .config import config, TierConfig
 from .models import (
     ExtractionProgress, ExtractionPreview, ExtractResponseEnhanced,
     SynthesizeResponse, AnalyticsResponse
@@ -388,21 +388,30 @@ class TTSService:
         self.aws_service = aws_service
     
     async def synthesize_text(
-        self, 
-        text: str, 
-        voice_id: str, 
-        engine: str, 
-        user: User, 
+        self,
+        text: str,
+        voice_id: str,
+        engine: str,
+        user: User,
         db: Session
     ) -> SynthesizeResponse:
         """Synthesize text to speech using Amazon Polly with clean speech marks"""
         text_length = len(text)
-        
-        if not user.deduct_characters(text_length):
-            raise ValueError(f"Text length ({text_length}) exceeds remaining character limit ({user.remaining_chars})")
-        
+
+        # Check tier-based usage limits
+        can_use, reason = user.can_use_characters(text_length)
+        if not can_use:
+            logger.warning(f"🚫 User {user.username} ({user.tier.value.lower()}) limit exceeded: {reason}")
+            raise ValueError(reason)
+
+        # Check if user's tier supports the requested engine
+        if not TierConfig.can_use_engine(user.tier.value, engine):
+            if engine == "neural" and not config.NEURAL_VOICES_ENABLED:
+                raise ValueError("Neural voices are not yet available. Coming soon for Pro users!")
+            raise ValueError(f"Your {user.tier.value.lower()} tier does not support {engine} engine. Please upgrade.")
+
         try:
-            logger.info(f"🎤 Starting TTS synthesis for user {user.username}: {text_length} chars with {voice_id}/{engine}")
+            logger.info(f"🎤 Starting TTS synthesis for user {user.username} ({user.tier.value.lower()}): {text_length} chars with {voice_id}/{engine}")
             
             chunks = self.aws_service.split_text_smart(text)
             audio_segments = []
@@ -477,21 +486,38 @@ class TTSService:
                 Params={"Bucket": self.aws_service.bucket_name, "Key": audio_key},
                 ExpiresIn=3600
             )
-            
+
+            # Track usage for monthly limits
+            user.track_character_usage(text_length)
+
+            # Also deduct from legacy remaining_chars if applicable
+            user.deduct_characters(text_length)
+
             db.commit()
-            
+
             duration = len(combined_audio) / 1000.0
-            
-            logger.info(f"✅ Synthesized {text_length} characters for user {user.username} in {duration:.1f}s")
-            
+
+            logger.info(f"✅ Synthesized {text_length} characters for user {user.username} ({user.tier.value.lower()}) in {duration:.1f}s")
+
+            # Get updated usage stats
+            monthly_cap = user.get_monthly_cap()
+            usage_percentage = user.get_usage_percentage()
+
             return SynthesizeResponse(
                 audio_url=audio_url,
                 speech_marks=speech_marks_list,
                 characters_used=text_length,
-                remaining_chars=user.remaining_chars,
+                remaining_chars=user.remaining_chars,  # Legacy field
                 duration_seconds=duration,
                 voice_used=voice_id,
-                engine_used=engine
+                engine_used=engine,
+                # New tier-based usage stats
+                monthly_usage=user.monthly_usage,
+                monthly_cap=monthly_cap,
+                usage_percentage=round(usage_percentage, 2),
+                usage_reset_date=user.usage_reset_date.isoformat() if user.usage_reset_date else None,
+                tier=user.tier.value.lower(),
+                is_near_limit=user.is_near_limit()
             )
             
         except Exception as e:
@@ -500,15 +526,35 @@ class TTSService:
             raise
 
 class StripeService:
-    """Service for Stripe payment operations"""
-    
+    """Service for Stripe payment operations with tier management"""
+
     def __init__(self):
         stripe.api_key = config.STRIPE_API_KEY
         self.webhook_secret = config.STRIPE_WEBHOOK_SECRET
-    
-    async def create_checkout_session(self, price_id: str, username: str) -> str:
-        """Create a Stripe checkout session for subscription"""
+
+    def get_tier_from_price_id(self, price_id: str) -> str:
+        """Determine tier from Stripe price ID"""
+        premium_ids = [
+            config.STRIPE_PRICE_ID_PREMIUM_MONTHLY,
+            config.STRIPE_PRICE_ID_PREMIUM_YEARLY
+        ]
+        pro_ids = [
+            config.STRIPE_PRICE_ID_PRO_MONTHLY,
+            config.STRIPE_PRICE_ID_PRO_YEARLY
+        ]
+
+        if price_id in premium_ids:
+            return "premium"
+        elif price_id in pro_ids:
+            return "pro"
+        else:
+            return "free"
+
+    async def create_checkout_session(self, price_id: str, username: str, user_email: str = None) -> str:
+        """Create a Stripe checkout session for subscription with tier tracking"""
         try:
+            tier = self.get_tier_from_price_id(price_id)
+
             checkout_session = stripe.checkout.Session.create(
                 payment_method_types=["card"],
                 line_items=[
@@ -518,20 +564,26 @@ class StripeService:
                     }
                 ],
                 mode="subscription",
-                success_url="http://localhost:3000/success",
-                cancel_url="http://localhost:3000/failed",
+                success_url="http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}",
+                cancel_url="http://localhost:3000/pricing",
                 client_reference_id=username,
+                customer_email=user_email,
+                metadata={
+                    "username": username,
+                    "tier": tier,
+                    "price_id": price_id
+                }
             )
-            
-            logger.info(f"💳 Created checkout session for user {username}")
+
+            logger.info(f"💳 Created {tier} checkout session for user {username}")
             return checkout_session.url
-            
+
         except Exception as e:
             logger.error(f"❌ Stripe checkout error for user {username}: {str(e)}")
             raise
     
     def handle_webhook_event(self, payload: bytes, signature: str, db: Session) -> Dict[str, str]:
-        """Handle Stripe webhook events"""
+        """Handle Stripe webhook events with tier management"""
         try:
             event = stripe.Webhook.construct_event(
                 payload, signature, self.webhook_secret
@@ -545,22 +597,63 @@ class StripeService:
 
         if event["type"] == "checkout.session.completed":
             session = event["data"]["object"]
-            username = session["client_reference_id"]
+            username = session.get("client_reference_id") or session.get("metadata", {}).get("username")
             user = db.query(User).filter(User.username == username).first()
-            
+
             if user:
-                subscription_id = session["customer"]
+                subscription_id = session.get("subscription")
+                metadata = session.get("metadata", {})
+                tier = metadata.get("tier", "free")
+                price_id = metadata.get("price_id", "")
+
+                # Update user subscription and tier
                 user.stripe_subscription_id = subscription_id
+                user.stripe_price_id = price_id
+
+                # Import UserTier enum
+                from models import UserTier
+                if tier == "premium":
+                    user.tier = UserTier.PREMIUM
+                elif tier == "pro":
+                    user.tier = UserTier.PRO
+
+                # Reset monthly usage on new subscription
+                user.monthly_usage = 0
+
                 db.commit()
-                logger.info(f"✅ Updated subscription ID for user {username}")
+                logger.info(f"✅ Updated subscription and tier ({tier}) for user {username}")
 
         elif event["type"] == "customer.subscription.deleted":
             subscription = event["data"]["object"]
             user = db.query(User).filter(User.stripe_subscription_id == subscription["id"]).first()
             if user:
+                # Downgrade to free tier
+                from models import UserTier
+                user.tier = UserTier.FREE
                 user.stripe_subscription_id = None
+                user.stripe_price_id = None
                 db.commit()
-                logger.info(f"✅ Removed subscription ID for user {user.username}")
+                logger.info(f"✅ Downgraded user {user.username} to free tier")
+
+        elif event["type"] == "customer.subscription.updated":
+            subscription = event["data"]["object"]
+            user = db.query(User).filter(User.stripe_subscription_id == subscription["id"]).first()
+            if user:
+                # Get the price ID from the subscription
+                items = subscription.get("items", {}).get("data", [])
+                if items:
+                    price_id = items[0].get("price", {}).get("id", "")
+                    tier = self.get_tier_from_price_id(price_id)
+
+                    from models import UserTier
+                    if tier == "premium":
+                        user.tier = UserTier.PREMIUM
+                    elif tier == "pro":
+                        user.tier = UserTier.PRO
+
+                    user.stripe_price_id = price_id
+                    db.commit()
+                    logger.info(f"✅ Updated tier ({tier}) for user {user.username}")
 
         return {"status": "success"}
 
