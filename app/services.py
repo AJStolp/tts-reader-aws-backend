@@ -398,10 +398,10 @@ class TTSService:
         """Synthesize text to speech using Amazon Polly with clean speech marks"""
         text_length = len(text)
 
-        # Check tier-based usage limits
-        can_use, reason = user.can_use_characters(text_length)
+        # Check if user has enough credits (credit system)
+        can_use, reason = user.can_use_credits(text_length)
         if not can_use:
-            logger.warning(f"🚫 User {user.username} ({user.tier.value.lower()}) limit exceeded: {reason}")
+            logger.warning(f"🚫 User {user.username} ({user.tier.value.lower()}) insufficient credits: {reason}")
             raise ValueError(reason)
 
         # Check if user's tier supports the requested engine
@@ -487,21 +487,20 @@ class TTSService:
                 ExpiresIn=3600
             )
 
-            # Track usage for monthly limits
-            user.track_character_usage(text_length)
+            # Deduct credits based on character count (1 credit = 1,000 chars)
+            user.deduct_credits_for_characters(text_length)
 
-            # Also deduct from legacy remaining_chars if applicable
+            # Also deduct from legacy remaining_chars for backward compatibility
             user.deduct_characters(text_length)
 
             db.commit()
 
             duration = len(combined_audio) / 1000.0
 
-            logger.info(f"✅ Synthesized {text_length} characters for user {user.username} ({user.tier.value.lower()}) in {duration:.1f}s")
+            logger.info(f"✅ Synthesized {text_length} characters for user {user.username} ({user.tier.value.lower()}) in {duration:.1f}s - Credits remaining: {user.credit_balance}")
 
-            # Get updated usage stats
-            monthly_cap = user.get_monthly_cap()
-            usage_percentage = user.get_usage_percentage()
+            # Calculate credits used for this request
+            credits_used = (text_length + 999) // 1000
 
             return SynthesizeResponse(
                 audio_url=audio_url,
@@ -511,13 +510,16 @@ class TTSService:
                 duration_seconds=duration,
                 voice_used=voice_id,
                 engine_used=engine,
-                # New tier-based usage stats
+                # Credit system stats
+                credit_balance=user.credit_balance,
+                credits_used=credits_used,
+                # Legacy tier-based usage stats (for backward compatibility)
                 monthly_usage=user.monthly_usage,
-                monthly_cap=monthly_cap,
-                usage_percentage=round(usage_percentage, 2),
+                monthly_cap=user.get_monthly_cap(),
+                usage_percentage=round(user.get_usage_percentage(), 2) if user.get_monthly_cap() > 0 else 0,
                 usage_reset_date=user.usage_reset_date.isoformat() if user.usage_reset_date else None,
                 tier=user.tier.value.lower(),
-                is_near_limit=user.is_near_limit()
+                is_near_limit=user.is_near_limit() if user.get_monthly_cap() > 0 else False
             )
             
         except Exception as e:
@@ -581,7 +583,62 @@ class StripeService:
         except Exception as e:
             logger.error(f"❌ Stripe checkout error for user {username}: {str(e)}")
             raise
-    
+
+    async def create_credit_checkout_session(self, credits: int, username: str, user_email: str = None) -> str:
+        """
+        Create a Stripe checkout session for one-time credit purchase.
+
+        Args:
+            credits: Number of credits to purchase
+            username: Username of the purchaser
+            user_email: Email of the purchaser (optional)
+
+        Returns:
+            Checkout session URL
+        """
+        try:
+            from app.config import CreditConfig
+
+            # Calculate price and determine tier
+            price = CreditConfig.calculate_price(credits)
+            tier = CreditConfig.get_tier_for_credits(credits)
+
+            # Create a dynamic price for the credit purchase
+            checkout_session = stripe.checkout.Session.create(
+                payment_method_types=["card"],
+                line_items=[
+                    {
+                        "price_data": {
+                            "currency": "usd",
+                            "product_data": {
+                                "name": f"{credits:,} TTS Credits",
+                                "description": f"{tier.upper()} tier - {credits * 1000:,} characters"
+                            },
+                            "unit_amount": int(price * 100)  # Convert to cents
+                        },
+                        "quantity": 1
+                    }
+                ],
+                mode="payment",  # One-time payment
+                success_url="http://localhost:3000/success?session_id={CHECKOUT_SESSION_ID}",
+                cancel_url="http://localhost:3000/pricing",
+                client_reference_id=username,
+                customer_email=user_email,
+                metadata={
+                    "username": username,
+                    "credits": str(credits),
+                    "tier": tier,
+                    "purchase_type": "credits"
+                }
+            )
+
+            logger.info(f"💳 Created credit checkout session for {credits} credits ({tier} tier) for user {username}")
+            return checkout_session.url
+
+        except Exception as e:
+            logger.error(f"❌ Credit checkout error for user {username}: {str(e)}")
+            raise
+
     def handle_webhook_event(self, payload: bytes, signature: str, db: Session) -> Dict[str, str]:
         """Handle Stripe webhook events with tier management"""
         try:
@@ -601,27 +658,46 @@ class StripeService:
             user = db.query(User).filter(User.username == username).first()
 
             if user:
-                subscription_id = session.get("subscription")
                 metadata = session.get("metadata", {})
-                tier = metadata.get("tier", "free")
-                price_id = metadata.get("price_id", "")
-
-                # Update user subscription and tier
-                user.stripe_subscription_id = subscription_id
-                user.stripe_price_id = price_id
+                purchase_type = metadata.get("purchase_type", "subscription")
 
                 # Import UserTier enum
                 from models import UserTier
-                if tier == "premium":
-                    user.tier = UserTier.PREMIUM
-                elif tier == "pro":
-                    user.tier = UserTier.PRO
 
-                # Reset monthly usage on new subscription
-                user.monthly_usage = 0
+                if purchase_type == "credits":
+                    # Handle credit purchase
+                    credits = int(metadata.get("credits", 0))
+                    tier = metadata.get("tier", "free")
 
-                db.commit()
-                logger.info(f"✅ Updated subscription and tier ({tier}) for user {username}")
+                    # Add credits to user balance and update tier
+                    if tier == "premium":
+                        user.purchase_credits(credits, UserTier.PREMIUM)
+                    elif tier == "pro":
+                        user.purchase_credits(credits, UserTier.PRO)
+
+                    db.commit()
+                    logger.info(f"✅ Added {credits} credits to user {username} ({tier} tier)")
+
+                else:
+                    # Handle subscription purchase (legacy)
+                    subscription_id = session.get("subscription")
+                    tier = metadata.get("tier", "free")
+                    price_id = metadata.get("price_id", "")
+
+                    # Update user subscription and tier
+                    user.stripe_subscription_id = subscription_id
+                    user.stripe_price_id = price_id
+
+                    if tier == "premium":
+                        user.tier = UserTier.PREMIUM
+                    elif tier == "pro":
+                        user.tier = UserTier.PRO
+
+                    # Reset monthly usage on new subscription
+                    user.monthly_usage = 0
+
+                    db.commit()
+                    logger.info(f"✅ Updated subscription and tier ({tier}) for user {username}")
 
         elif event["type"] == "customer.subscription.deleted":
             subscription = event["data"]["object"]

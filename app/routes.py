@@ -16,7 +16,7 @@ from .auth import auth_manager, get_current_user, validate_user_registration, cr
 from .models import (
     UserCreate, UserLogin, UserResponse, Token, ExtractRequest, ExtractRequestEnhanced,
     ExtractResponse, ExtractResponseEnhanced, SynthesizeRequest, SynthesizeResponse,
-    PreferencesUpdate, StripeCheckoutRequest, ExtractionPreview
+    PreferencesUpdate, StripeCheckoutRequest, CreditCheckoutRequest, ExtractionPreview
 )
 from .services import (
     aws_service, extraction_service, tts_service, stripe_service, analytics_service
@@ -91,6 +91,7 @@ async def login(request: Request, user_data: UserLogin, db: Session = Depends(ge
     """Authenticate user and return access token"""
     try:
         logger.info(f"Login attempt for username: {user_data.username}")
+        logger.info(f"Password length: {len(user_data.password)} chars, {len(user_data.password.encode('utf-8'))} bytes")
         logger.info(f"Received user_data: {user_data}")
     except Exception as e:
         logger.error(f"Error parsing user_data: {e}")
@@ -880,6 +881,45 @@ async def create_checkout_session(
     except Exception as e:
         logger.error(f"Checkout session creation failed: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to create checkout session")
+
+@payment_router.get("/credit-packages")
+async def get_credit_packages():
+    """Get available credit packages and slider configuration"""
+    from app.config import CreditConfig
+
+    return {
+        "packages": CreditConfig.CREDIT_PACKAGES,
+        "slider_config": CreditConfig.get_slider_config()
+    }
+
+@payment_router.post("/create-credit-checkout")
+async def create_credit_checkout(
+    request: CreditCheckoutRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """Create a Stripe checkout session for one-time credit purchase"""
+    try:
+        url = await stripe_service.create_credit_checkout_session(
+            request.credits,
+            current_user.username,
+            current_user.email
+        )
+        return {"url": url}
+    except ValueError as e:
+        logger.error(f"Invalid credit amount: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Credit checkout session creation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create credit checkout session")
+
+@payment_router.get("/credit-balance")
+async def get_credit_balance(current_user: User = Depends(get_current_user)):
+    """Get user's current credit balance and stats"""
+    return {
+        "credit_balance": current_user.credit_balance,
+        "tier": current_user.tier.value.lower() if current_user.tier else "free",
+        "can_use_polly": current_user.tier.value != "FREE" if current_user.tier else False
+    }
 
 @payment_router.post("/stripe_webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
