@@ -50,8 +50,11 @@ class User(Base):
 
     # Tier and usage tracking
     tier = Column(Enum(UserTier), default=UserTier.FREE, nullable=False)
-    monthly_usage = Column(Integer, default=0, nullable=False)
-    usage_reset_date = Column(DateTime, default=lambda: datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0), nullable=False)
+    monthly_usage = Column(Integer, default=0, nullable=False)  # DEPRECATED: Keep for migration
+    usage_reset_date = Column(DateTime, default=lambda: datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0), nullable=False)  # DEPRECATED
+
+    # Credit system (1 credit = 1,000 characters, never expires)
+    credit_balance = Column(Integer, default=0, nullable=False)
 
     # Account status and metadata
     is_active = Column(Boolean, default=True, nullable=False)
@@ -215,9 +218,93 @@ class User(Base):
         self.email_verification_token_expires = None
         self.updated_at = datetime.utcnow()
 
+    # ============ CREDIT SYSTEM METHODS ============
+
+    def purchase_credits(self, credit_amount: int, tier: UserTier) -> None:
+        """
+        Purchase credits and assign tier based on amount.
+
+        Args:
+            credit_amount (int): Number of credits to purchase
+            tier (UserTier): Tier to assign based on purchase
+        """
+        if credit_amount < 0:
+            raise ValueError("Credit amount cannot be negative")
+
+        self.credit_balance += credit_amount
+        self.tier = tier
+        self.updated_at = datetime.utcnow()
+
+    def can_use_credits(self, char_count: int) -> tuple[bool, str]:
+        """
+        Check if user has enough credits for the requested characters.
+        1 credit = 1,000 characters
+
+        Args:
+            char_count (int): Number of characters to use
+
+        Returns:
+            tuple[bool, str]: (can_use, reason) - True if allowed, False with reason if not
+        """
+        # Free tier can't use Polly (unlimited web speech API only)
+        if self.tier == UserTier.FREE:
+            return False, "Free tier users cannot use AWS Polly. Purchase credits to unlock Premium or Pro features."
+
+        # Calculate credits needed (round up)
+        credits_needed = (char_count + 999) // 1000  # Round up: 1-1000 chars = 1 credit, 1001-2000 = 2 credits, etc.
+
+        if self.credit_balance < credits_needed:
+            return False, f"Insufficient credits. Need {credits_needed} credits, have {self.credit_balance} credits."
+
+        return True, ""
+
+    def deduct_credits_for_characters(self, char_count: int) -> bool:
+        """
+        Deduct credits based on character count.
+        1 credit = 1,000 characters (rounded up)
+
+        Args:
+            char_count (int): Number of characters used
+
+        Returns:
+            bool: True if deduction successful, False if insufficient credits
+        """
+        if char_count < 0:
+            raise ValueError("Character count cannot be negative")
+
+        # Calculate credits needed (round up)
+        credits_needed = (char_count + 999) // 1000
+
+        if self.credit_balance >= credits_needed:
+            self.credit_balance -= credits_needed
+            self.updated_at = datetime.utcnow()
+            return True
+        return False
+
+    def get_credit_stats(self) -> dict:
+        """
+        Get user credit statistics.
+
+        Returns:
+            dict: Credit balance and tier information
+        """
+        return {
+            "user_id": str(self.user_id),
+            "username": self.username,
+            "credit_balance": self.credit_balance,
+            "tier": self.tier.value if self.tier else "FREE",
+            "can_use_polly": self.tier != UserTier.FREE,
+            "is_active": self.is_active,
+            "email_verified": self.email_verified
+        }
+
+    # ============ DEPRECATED MONTHLY CAP METHODS ============
+    # Keep for backward compatibility during migration
+
     def get_monthly_cap(self) -> int:
         """
-        Get monthly character cap based on user tier.
+        DEPRECATED: Get monthly character cap based on user tier.
+        Kept for backward compatibility. Use credit system instead.
 
         Returns:
             int: Monthly character limit (0 for unlimited)
@@ -317,33 +404,35 @@ class User(Base):
     def to_dict(self, include_sensitive: bool = False) -> dict:
         """
         Convert user object to dictionary.
-        
+
         Args:
             include_sensitive (bool): Whether to include sensitive information
-            
+
         Returns:
             dict: User data as dictionary
         """
-        # Ensure usage is current
-        self.check_and_reset_monthly_usage()
-
         data = {
             "user_id": str(self.user_id),
             "username": self.username,
             "email": self.email,
             "first_name": self.first_name,
             "last_name": self.last_name,
-            "remaining_chars": self.remaining_chars,
+            "remaining_chars": self.remaining_chars,  # Legacy field
             "engine": self.engine,
             "voice_id": self.voice_id,
             "is_active": self.is_active,
             "email_verified": self.email_verified,
             "tier": self.tier.value.lower() if self.tier else "free",
+            # Credit system
+            "credit_balance": self.credit_balance,
+            "can_use_polly": self.tier != UserTier.FREE,
+            # Deprecated monthly usage fields (keep for backward compatibility)
             "monthly_usage": self.monthly_usage,
             "monthly_cap": self.get_monthly_cap(),
-            "usage_percentage": round(self.get_usage_percentage(), 2),
+            "usage_percentage": round(self.get_usage_percentage(), 2) if self.get_monthly_cap() > 0 else 0,
             "usage_reset_date": self.usage_reset_date.isoformat() if self.usage_reset_date else None,
-            "is_near_limit": self.is_near_limit(),
+            "is_near_limit": self.is_near_limit() if self.get_monthly_cap() > 0 else False,
+            # Timestamps
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "last_login": self.last_login.isoformat() if self.last_login else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

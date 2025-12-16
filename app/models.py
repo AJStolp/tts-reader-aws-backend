@@ -96,7 +96,7 @@ class SynthesizeRequest(BaseModel):
     engine: str = Field(default="standard", pattern="^(standard|neural)$")
 
 class SynthesizeResponse(BaseModel):
-    """Model for TTS synthesis response with tier-based usage tracking"""
+    """Model for TTS synthesis response with credit-based and tier-based usage tracking"""
     audio_url: str
     speech_marks: List[Dict[str, Any]] = Field(default_factory=list, description="Clean AWS Polly speech marks")
     characters_used: int
@@ -104,7 +104,10 @@ class SynthesizeResponse(BaseModel):
     duration_seconds: float
     voice_used: Optional[str] = None
     engine_used: Optional[str] = None
-    # New tier-based usage fields
+    # Credit system fields
+    credit_balance: Optional[int] = None
+    credits_used: Optional[int] = None
+    # Legacy tier-based usage fields (for backward compatibility)
     monthly_usage: Optional[int] = None
     monthly_cap: Optional[int] = None
     usage_percentage: Optional[float] = None
@@ -122,6 +125,10 @@ class PreferencesUpdate(BaseModel):
 class StripeCheckoutRequest(BaseModel):
     """Model for Stripe checkout session creation"""
     price_id: str = Field(default="price_1RcGYRQwS4m9kgMV6C1wAZcN")
+
+class CreditCheckoutRequest(BaseModel):
+    """Model for credit purchase checkout session creation"""
+    credits: int = Field(..., ge=2000, le=50000, description="Number of credits to purchase (2,000 - 50,000)")
 
 # Health check models
 class HealthCheckResponse(BaseModel):
