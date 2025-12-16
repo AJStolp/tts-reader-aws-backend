@@ -91,6 +91,7 @@ async def login(request: Request, user_data: UserLogin, db: Session = Depends(ge
     """Authenticate user and return access token"""
     try:
         logger.info(f"Login attempt for username: {user_data.username}")
+        logger.info(f"Password length: {len(user_data.password)} chars, {len(user_data.password.encode('utf-8'))} bytes")
         logger.info(f"Received user_data: {user_data}")
     except Exception as e:
         logger.error(f"Error parsing user_data: {e}")

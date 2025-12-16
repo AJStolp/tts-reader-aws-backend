@@ -65,29 +65,37 @@ class User(Base):
     def set_password(self, password: str) -> None:
         """
         Hash and set the user's password using bcrypt.
-        
+
         Args:
             password (str): Plain text password to hash
         """
         if not password:
             raise ValueError("Password cannot be empty")
-        
-        self.password_hash = pwd_context.hash(password)
+
+        # Truncate password to 72 bytes for bcrypt compatibility
+        password_bytes = password.encode('utf-8')[:72]
+        password_truncated = password_bytes.decode('utf-8', errors='ignore')
+
+        self.password_hash = pwd_context.hash(password_truncated)
     
     def check_password(self, password: str) -> bool:
         """
         Check if the provided password matches the stored hash.
-        
+
         Args:
             password (str): Plain text password to verify
-            
+
         Returns:
             bool: True if password matches, False otherwise
         """
         if not password or not self.password_hash:
             return False
-        
-        return pwd_context.verify(password, self.password_hash)
+
+        # Truncate password to 72 bytes for bcrypt compatibility
+        password_bytes = password.encode('utf-8')[:72]
+        password_truncated = password_bytes.decode('utf-8', errors='ignore')
+
+        return pwd_context.verify(password_truncated, self.password_hash)
     
     def update_last_login(self) -> None:
         """Update the last login timestamp"""
