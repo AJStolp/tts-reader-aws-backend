@@ -128,7 +128,7 @@ class StripeCheckoutRequest(BaseModel):
 
 class CreditCheckoutRequest(BaseModel):
     """Model for credit purchase checkout session creation"""
-    credits: int = Field(..., ge=2000, le=50000, description="Number of credits to purchase (2,000 - 50,000)")
+    credits: int = Field(..., ge=500, le=50000, description="Number of credits to purchase (500 - 50,000)")
 
 # Health check models
 class HealthCheckResponse(BaseModel):

@@ -500,26 +500,44 @@ class CreditConfig:
     CHARACTERS_PER_CREDIT = 1000  # 1 credit = 1,000 characters
 
     # Slider range
-    CREDIT_MIN = 2000  # 2,000 credits (2M characters)
+    CREDIT_MIN = 500  # 500 credits (500k characters) - Perfect for audiobooks
     CREDIT_MAX = 50000  # 50,000 credits (50M characters)
 
     # Tier thresholds
+    LIGHT_CREDIT_THRESHOLD = 500  # 500-1,999 credits = Light tier
     PREMIUM_CREDIT_THRESHOLD = 2000  # 2,000-9,999 credits = Premium tier
     PRO_CREDIT_THRESHOLD = 10000  # 10,000+ credits = Pro tier
 
     # Pricing rates per credit
+    LIGHT_RATE = 0.007  # $0.007 per credit (~$7 per 1,000 credits)
     PREMIUM_RATE = 0.007  # $0.007 per credit (~$7 per 1,000 credits)
     PRO_RATE = 0.0034  # $0.0034 per credit (~$3.40 per 1,000 credits)
 
     # Predefined credit packages (examples for frontend)
     CREDIT_PACKAGES = [
         {
+            "credits": 500,
+            "tier": "light",
+            "price": 3.50,
+            "characters": 500_000,
+            "rate": 0.007,
+            "description": "Audiobook package - Perfect for one book (~8-10 hours)"
+        },
+        {
+            "credits": 1000,
+            "tier": "light",
+            "price": 7.00,
+            "characters": 1_000_000,
+            "rate": 0.007,
+            "description": "Light usage - 2-3 audiobooks"
+        },
+        {
             "credits": 2000,
             "tier": "premium",
             "price": 14.00,
             "characters": 2_000_000,
             "rate": 0.007,
-            "description": "Starter package - Perfect for occasional use"
+            "description": "Regular package - Great for weekly use"
         },
         {
             "credits": 5000,
@@ -527,7 +545,7 @@ class CreditConfig:
             "price": 35.00,
             "characters": 5_000_000,
             "rate": 0.007,
-            "description": "Popular package - Great for regular users"
+            "description": "Popular package - Heavy monthly usage"
         },
         {
             "credits": 10000,
@@ -567,15 +585,17 @@ class CreditConfig:
             Price in dollars
         """
         if credits < CreditConfig.CREDIT_MIN:
-            raise ValueError(f"Minimum purchase is {CreditConfig.CREDIT_MIN} credits")
+            raise ValueError(f"Minimum purchase is {CreditConfig.CREDIT_MIN} credits (500k characters)")
         if credits > CreditConfig.CREDIT_MAX:
-            raise ValueError(f"Maximum purchase is {CreditConfig.CREDIT_MAX} credits")
+            raise ValueError(f"Maximum purchase is {CreditConfig.CREDIT_MAX} credits (50M characters)")
 
         # Determine tier and rate
         if credits >= CreditConfig.PRO_CREDIT_THRESHOLD:
             rate = CreditConfig.PRO_RATE
-        else:
+        elif credits >= CreditConfig.PREMIUM_CREDIT_THRESHOLD:
             rate = CreditConfig.PREMIUM_RATE
+        else:
+            rate = CreditConfig.LIGHT_RATE
 
         return round(credits * rate, 2)
 
@@ -588,12 +608,14 @@ class CreditConfig:
             credits: Number of credits
 
         Returns:
-            Tier name ("premium" or "pro")
+            Tier name ("light", "premium", or "pro")
         """
         if credits >= CreditConfig.PRO_CREDIT_THRESHOLD:
             return "pro"
         elif credits >= CreditConfig.PREMIUM_CREDIT_THRESHOLD:
             return "premium"
+        elif credits >= CreditConfig.LIGHT_CREDIT_THRESHOLD:
+            return "light"
         else:
             return "free"
 
@@ -608,8 +630,10 @@ class CreditConfig:
         return {
             "min": CreditConfig.CREDIT_MIN,
             "max": CreditConfig.CREDIT_MAX,
+            "light_threshold": CreditConfig.LIGHT_CREDIT_THRESHOLD,
             "premium_threshold": CreditConfig.PREMIUM_CREDIT_THRESHOLD,
             "pro_threshold": CreditConfig.PRO_CREDIT_THRESHOLD,
+            "light_rate": CreditConfig.LIGHT_RATE,
             "premium_rate": CreditConfig.PREMIUM_RATE,
             "pro_rate": CreditConfig.PRO_RATE,
             "characters_per_credit": CreditConfig.CHARACTERS_PER_CREDIT

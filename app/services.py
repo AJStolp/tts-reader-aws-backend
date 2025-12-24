@@ -670,7 +670,8 @@ class StripeService:
                     tier = metadata.get("tier", "free")
 
                     # Add credits to user balance and update tier
-                    if tier == "premium":
+                    # Light tier users get Premium features (just fewer credits)
+                    if tier == "light" or tier == "premium":
                         user.purchase_credits(credits, UserTier.PREMIUM)
                     elif tier == "pro":
                         user.purchase_credits(credits, UserTier.PRO)
