@@ -604,10 +604,27 @@ async def synthesize_text(
 ):
     """Synthesize text to speech using Amazon Polly with tier-based limits"""
     try:
+        # 🔍 DEBUG LOGGING - Log incoming request details
+        logger.info("=" * 80)
+        logger.info(f"🔍 SYNTHESIS REQUEST RECEIVED")
+        logger.info(f"   User: {current_user.username}")
+        logger.info(f"   User ID: {current_user.user_id}")
+        logger.info(f"   Tier: {current_user.tier.value if current_user.tier else 'None'}")
+        logger.info(f"   Credit Balance: {current_user.credit_balance}")
+        logger.info(f"   Remaining Chars (legacy): {current_user.remaining_chars}")
+
         # Support both field names for backwards compatibility
         text_content = getattr(request, 'text_to_speech', None) or getattr(request, 'text', None)
 
+        logger.info(f"   Text Length: {len(text_content) if text_content else 0} chars")
+        logger.info(f"   Text Preview: {text_content[:50] if text_content else 'None'}...")
+        logger.info(f"   Voice ID: {request.voice_id}")
+        logger.info(f"   Engine: {request.engine}")
+        logger.info(f"   Include Speech Marks: {getattr(request, 'include_speech_marks', False)}")
+        logger.info("=" * 80)
+
         if not text_content:
+            logger.error("❌ No text content provided in request")
             raise HTTPException(status_code=400, detail="Text content is required")
 
         result = await tts_service.synthesize_text(

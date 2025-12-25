@@ -398,17 +398,37 @@ class TTSService:
         """Synthesize text to speech using Amazon Polly with clean speech marks"""
         text_length = len(text)
 
+        # 🔍 DEBUG LOGGING - Log synthesis details
+        logger.info("=" * 80)
+        logger.info(f"🎤 TTS SERVICE: Starting synthesis")
+        logger.info(f"   User: {user.username}")
+        logger.info(f"   Tier: {user.tier.value if user.tier else 'None'}")
+        logger.info(f"   Credit Balance BEFORE: {user.credit_balance}")
+        logger.info(f"   Text Length: {text_length} chars")
+        logger.info(f"   Voice: {voice_id}")
+        logger.info(f"   Engine: {engine}")
+
+        # Calculate credits needed
+        credits_needed = (text_length + 999) // 1000
+        logger.info(f"   Credits Needed: {credits_needed}")
+
         # Check if user has enough credits (credit system)
+        logger.info(f"🔍 Checking credit availability...")
         can_use, reason = user.can_use_credits(text_length)
         if not can_use:
             logger.warning(f"🚫 User {user.username} ({user.tier.value.lower()}) insufficient credits: {reason}")
+            logger.warning(f"   Credit Balance: {user.credit_balance}, Credits Needed: {credits_needed}")
             raise ValueError(reason)
+        logger.info(f"✅ Credit check passed")
 
         # Check if user's tier supports the requested engine
+        logger.info(f"🔍 Checking tier permissions for engine '{engine}'...")
         if not TierConfig.can_use_engine(user.tier.value, engine):
+            logger.warning(f"🚫 Tier {user.tier.value} cannot use engine '{engine}'")
             if engine == "neural" and not config.NEURAL_VOICES_ENABLED:
                 raise ValueError("Neural voices are not yet available. Coming soon for Pro users!")
             raise ValueError(f"Your {user.tier.value.lower()} tier does not support {engine} engine. Please upgrade.")
+        logger.info(f"✅ Tier permission check passed")
 
         try:
             logger.info(f"🎤 Starting TTS synthesis for user {user.username} ({user.tier.value.lower()}): {text_length} chars with {voice_id}/{engine}")
@@ -488,12 +508,29 @@ class TTSService:
             )
 
             # Deduct credits based on character count (1 credit = 1,000 chars)
-            user.deduct_credits_for_characters(text_length)
+            logger.info(f"🔍 Deducting credits...")
+            logger.info(f"   Credit Balance BEFORE deduction: {user.credit_balance}")
+            logger.info(f"   Credits to deduct: {credits_needed}")
+
+            deduction_success = user.deduct_credits_for_characters(text_length)
+
+            logger.info(f"   Credit Balance AFTER deduction: {user.credit_balance}")
+            logger.info(f"   Deduction successful: {deduction_success}")
+
+            if not deduction_success:
+                logger.error(f"❌ Credit deduction failed! Balance: {user.credit_balance}, Needed: {credits_needed}")
+                raise ValueError(f"Failed to deduct credits. Balance: {user.credit_balance}, Needed: {credits_needed}")
 
             # Also deduct from legacy remaining_chars for backward compatibility
-            user.deduct_characters(text_length)
+            logger.info(f"🔍 Deducting legacy remaining_chars...")
+            logger.info(f"   Remaining chars BEFORE: {user.remaining_chars}")
+            legacy_deduction_success = user.deduct_characters(text_length)
+            logger.info(f"   Remaining chars AFTER: {user.remaining_chars}")
+            logger.info(f"   Legacy deduction successful: {legacy_deduction_success}")
 
+            logger.info(f"🔍 Committing database changes...")
             db.commit()
+            logger.info(f"✅ Database commit successful")
 
             duration = len(combined_audio) / 1000.0
 
@@ -523,8 +560,19 @@ class TTSService:
             )
             
         except Exception as e:
-            logger.error(f"❌ Synthesis error for user {user.username}: {str(e)}")
+            logger.error("=" * 80)
+            logger.error(f"❌ SYNTHESIS ERROR for user {user.username}")
+            logger.error(f"   Error Type: {type(e).__name__}")
+            logger.error(f"   Error Message: {str(e)}")
+            logger.error(f"   User Tier: {user.tier.value if user.tier else 'None'}")
+            logger.error(f"   Credit Balance: {user.credit_balance}")
+            logger.error(f"   Text Length: {text_length}")
+            logger.error(f"   Credits Needed: {credits_needed}")
+            logger.error("=" * 80)
+            import traceback
+            logger.error(f"Stack trace:\n{traceback.format_exc()}")
             db.rollback()
+            logger.info(f"🔄 Database rolled back")
             raise
 
 class StripeService:
