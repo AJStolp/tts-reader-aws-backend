@@ -226,11 +226,11 @@ def create_app() -> FastAPI:
         # Add enterprise security documentation
         contact={
             "name": "TTS DeepSight Enterprise Security",
-            "email": "security@ttsdeepsight.com"
+            "email": "security@ttsaudify.com"
         },
         license_info={
             "name": "Enterprise License",
-            "url": "https://ttsdeepsight.com/enterprise-license"
+            "url": "https://ttsaudify.com/enterprise-license"
         }
     )
     
