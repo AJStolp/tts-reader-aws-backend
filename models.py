@@ -1,9 +1,10 @@
 import uuid
 import secrets
 from datetime import datetime, timedelta
-from sqlalchemy import Column, String, Integer, DateTime, Boolean, Enum
+from sqlalchemy import Column, String, Integer, DateTime, Boolean, Enum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
 from passlib.context import CryptContext
 import enum
 
@@ -18,6 +19,81 @@ class UserTier(enum.Enum):
     FREE = "FREE"
     PREMIUM = "PREMIUM"
     PRO = "PRO"
+
+# Transaction status enumeration
+class TransactionStatus(enum.Enum):
+    ACTIVE = "ACTIVE"       # Credits available and not expired
+    EXPIRED = "EXPIRED"     # Credits expired (1 year from purchase)
+    CONSUMED = "CONSUMED"   # All credits used up
+
+class CreditTransaction(Base):
+    """
+    Credit transaction ledger - tracks individual credit purchases with expiration.
+    Each purchase has its own 1-year expiration from purchase date.
+    Credits are deducted FIFO (oldest expiring first).
+    """
+    __tablename__ = "credit_transactions"
+
+    # Primary key
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Foreign key to user
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id'), nullable=False, index=True)
+
+    # Purchase details
+    credits_purchased = Column(Integer, nullable=False)  # Original amount purchased
+    credits_remaining = Column(Integer, nullable=False)  # Current remaining balance
+
+    # Pricing and tier at time of purchase
+    purchase_price = Column(Integer, nullable=True)  # Price in cents (e.g., 500 = $5.00)
+    tier_at_purchase = Column(Enum(UserTier), nullable=True)  # Tier granted at purchase
+
+    # Timestamps
+    purchased_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)  # purchased_at + 1 year
+
+    # Status
+    status = Column(Enum(TransactionStatus), default=TransactionStatus.ACTIVE, nullable=False, index=True)
+
+    # Stripe metadata
+    stripe_payment_id = Column(String(128), nullable=True)  # Stripe payment intent ID
+    stripe_session_id = Column(String(128), nullable=True)  # Stripe checkout session ID
+
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationship to user
+    user = relationship("User", back_populates="credit_transactions")
+
+    def __repr__(self) -> str:
+        """String representation of CreditTransaction"""
+        return f"<CreditTransaction(id={self.id}, user_id={self.user_id}, credits={self.credits_remaining}/{self.credits_purchased}, status={self.status.value}, expires={self.expires_at.date()})>"
+
+    def is_expired(self) -> bool:
+        """Check if this transaction has expired"""
+        return datetime.utcnow() >= self.expires_at
+
+    def days_until_expiration(self) -> int:
+        """Calculate days until expiration (negative if already expired)"""
+        delta = self.expires_at - datetime.utcnow()
+        return delta.days
+
+    def to_dict(self) -> dict:
+        """Convert transaction to dictionary"""
+        return {
+            "id": self.id,
+            "credits_purchased": self.credits_purchased,
+            "credits_remaining": self.credits_remaining,
+            "purchase_price": self.purchase_price,
+            "tier_at_purchase": self.tier_at_purchase.value if self.tier_at_purchase else None,
+            "purchased_at": self.purchased_at.isoformat() if self.purchased_at else None,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "days_until_expiration": self.days_until_expiration(),
+            "status": self.status.value,
+            "stripe_payment_id": self.stripe_payment_id,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
 
 class User(Base):
     """Enhanced User model with Supabase UUID support and modern security"""
@@ -53,8 +129,11 @@ class User(Base):
     monthly_usage = Column(Integer, default=0, nullable=False)  # DEPRECATED: Keep for migration
     usage_reset_date = Column(DateTime, default=lambda: datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0), nullable=False)  # DEPRECATED
 
-    # Credit system (1 credit = 1,000 characters, never expires)
-    credit_balance = Column(Integer, default=0, nullable=False)
+    # Credit system (1 credit = 1,000 characters, expires 1 year from purchase)
+    credit_balance = Column(Integer, default=0, nullable=False)  # COMPUTED FIELD - cached sum of active transactions
+
+    # Relationship to credit transactions
+    credit_transactions = relationship("CreditTransaction", back_populates="user", cascade="all, delete-orphan")
 
     # Account status and metadata
     is_active = Column(Boolean, default=True, nullable=False)
@@ -220,20 +299,100 @@ class User(Base):
 
     # ============ CREDIT SYSTEM METHODS ============
 
-    def purchase_credits(self, credit_amount: int, tier: UserTier) -> None:
+    def calculate_total_active_credits(self) -> int:
         """
-        Purchase credits and assign tier based on amount.
+        Calculate total active credits from all ACTIVE transactions.
+        This is the real-time credit balance.
+
+        Returns:
+            int: Total credits available (sum of all active transaction credits_remaining)
+        """
+        from sqlalchemy import and_
+        total = sum(
+            txn.credits_remaining
+            for txn in self.credit_transactions
+            if txn.status == TransactionStatus.ACTIVE
+        )
+        return total
+
+    def update_tier_from_credits(self) -> None:
+        """
+        Update user tier based on total active credits.
+        Tier is dynamic - changes as credits are used or expire.
+
+        Tier thresholds:
+        - PRO: 10,000+ credits
+        - PREMIUM: 2,000+ credits
+        - FREE: < 2,000 credits
+        """
+        total_credits = self.calculate_total_active_credits()
+
+        if total_credits >= 10000:
+            self.tier = UserTier.PRO
+        elif total_credits >= 2000:
+            self.tier = UserTier.PREMIUM
+        else:
+            self.tier = UserTier.FREE
+
+        self.updated_at = datetime.utcnow()
+
+    def sync_credit_balance(self) -> None:
+        """
+        Sync the cached credit_balance field with actual transaction totals.
+        This is a computed field for performance - updated after each transaction.
+        """
+        self.credit_balance = self.calculate_total_active_credits()
+        self.updated_at = datetime.utcnow()
+
+    def purchase_credits(self, credit_amount: int, purchase_price: int = None, stripe_payment_id: str = None, stripe_session_id: str = None) -> 'CreditTransaction':
+        """
+        Purchase credits by creating a new transaction with 1-year expiration.
+        Automatically updates tier based on new total.
 
         Args:
             credit_amount (int): Number of credits to purchase
-            tier (UserTier): Tier to assign based on purchase
+            purchase_price (int, optional): Price in cents (e.g., 500 = $5.00)
+            stripe_payment_id (str, optional): Stripe payment intent ID
+            stripe_session_id (str, optional): Stripe checkout session ID
+
+        Returns:
+            CreditTransaction: The created transaction
         """
         if credit_amount < 0:
             raise ValueError("Credit amount cannot be negative")
 
-        self.credit_balance += credit_amount
-        self.tier = tier
-        self.updated_at = datetime.utcnow()
+        # Determine tier at purchase based on credit amount
+        if credit_amount >= 10000:
+            tier_at_purchase = UserTier.PRO
+        elif credit_amount >= 2000:
+            tier_at_purchase = UserTier.PREMIUM
+        else:
+            tier_at_purchase = UserTier.FREE
+
+        # Create transaction with 1-year expiration
+        purchased_at = datetime.utcnow()
+        expires_at = purchased_at.replace(year=purchased_at.year + 1)
+
+        transaction = CreditTransaction(
+            user_id=self.user_id,
+            credits_purchased=credit_amount,
+            credits_remaining=credit_amount,
+            purchase_price=purchase_price,
+            tier_at_purchase=tier_at_purchase,
+            purchased_at=purchased_at,
+            expires_at=expires_at,
+            status=TransactionStatus.ACTIVE,
+            stripe_payment_id=stripe_payment_id,
+            stripe_session_id=stripe_session_id
+        )
+
+        self.credit_transactions.append(transaction)
+
+        # Update cached balance and tier
+        self.sync_credit_balance()
+        self.update_tier_from_credits()
+
+        return transaction
 
     def can_use_credits(self, char_count: int) -> tuple[bool, str]:
         """
@@ -260,7 +419,7 @@ class User(Base):
 
     def deduct_credits_for_characters(self, char_count: int) -> bool:
         """
-        Deduct credits based on character count.
+        Deduct credits based on character count using FIFO (oldest expiring first).
         1 credit = 1,000 characters (rounded up)
 
         Args:
@@ -275,27 +434,75 @@ class User(Base):
         # Calculate credits needed (round up)
         credits_needed = (char_count + 999) // 1000
 
-        if self.credit_balance >= credits_needed:
-            self.credit_balance -= credits_needed
-            self.updated_at = datetime.utcnow()
-            return True
-        return False
+        # Check if enough credits available
+        total_available = self.calculate_total_active_credits()
+        if total_available < credits_needed:
+            return False
+
+        # Deduct from transactions using FIFO (oldest expiring first)
+        remaining_to_deduct = credits_needed
+
+        # Get active transactions sorted by expiration date (oldest first)
+        active_transactions = sorted(
+            [txn for txn in self.credit_transactions if txn.status == TransactionStatus.ACTIVE],
+            key=lambda x: x.expires_at
+        )
+
+        for transaction in active_transactions:
+            if remaining_to_deduct <= 0:
+                break
+
+            # Deduct from this transaction
+            deduction = min(transaction.credits_remaining, remaining_to_deduct)
+            transaction.credits_remaining -= deduction
+            remaining_to_deduct -= deduction
+
+            # Mark as CONSUMED if depleted
+            if transaction.credits_remaining == 0:
+                transaction.status = TransactionStatus.CONSUMED
+
+            transaction.updated_at = datetime.utcnow()
+
+        # Update cached balance and tier
+        self.sync_credit_balance()
+        self.update_tier_from_credits()
+
+        return True
 
     def get_credit_stats(self) -> dict:
         """
-        Get user credit statistics.
+        Get user credit statistics with transaction details and expiration info.
 
         Returns:
-            dict: Credit balance and tier information
+            dict: Credit balance, tier, transactions, and expiration information
         """
+        # Get active transactions sorted by expiration (soonest first)
+        active_transactions = sorted(
+            [txn for txn in self.credit_transactions if txn.status == TransactionStatus.ACTIVE],
+            key=lambda x: x.expires_at
+        )
+
+        # Find next expiration
+        next_expiration = None
+        days_until_expiration = None
+        if active_transactions:
+            next_expiration = active_transactions[0].expires_at
+            days_until_expiration = active_transactions[0].days_until_expiration()
+
         return {
             "user_id": str(self.user_id),
             "username": self.username,
-            "credit_balance": self.credit_balance,
+            "credit_balance": self.calculate_total_active_credits(),  # Real-time calculation
             "tier": self.tier.value if self.tier else "FREE",
             "can_use_polly": self.tier != UserTier.FREE,
             "is_active": self.is_active,
-            "email_verified": self.email_verified
+            "email_verified": self.email_verified,
+            # Expiration info for frontend countdown
+            "next_expiration": next_expiration.isoformat() if next_expiration else None,
+            "days_until_expiration": days_until_expiration,
+            # Transaction details
+            "active_transactions": [txn.to_dict() for txn in active_transactions],
+            "total_transactions": len(self.credit_transactions),
         }
 
     # ============ DEPRECATED MONTHLY CAP METHODS ============
