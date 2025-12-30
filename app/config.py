@@ -18,6 +18,9 @@ class EnterpriseConfig(BaseSettings):
     PORT: int = 5000
     WORKERS: int = 4
     RELOAD: bool = False
+
+    # Frontend Configuration
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
     
     # Database Configuration - Supporting both old and new formats
     DATABASE_URL: str = "sqlite:///./database.db"
