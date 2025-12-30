@@ -749,20 +749,46 @@ async def get_voices(current_user: User = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail="Could not retrieve available voices")
 
 # User management endpoints - COMPLETE
-@user_router.get("/user", response_model=UserResponse)
+@user_router.get("/user")
 async def get_user_info(current_user: User = Depends(get_current_user)):
-    """Get current user information"""
-    return UserResponse(
-        user_id=str(current_user.user_id),
-        username=current_user.username,
-        email=current_user.email,
-        first_name=current_user.first_name,
-        last_name=current_user.last_name,
-        remaining_chars=current_user.remaining_chars,
-        engine=current_user.engine,
-        voice_id=current_user.voice_id,
-        created_at=current_user.created_at
-    )
+    """
+    Get complete user information including profile and credit details.
+    Returns user profile, credit balance, tier, and expiration info in one response.
+    """
+    # Get credit stats (includes expiration info)
+    credit_stats = current_user.get_credit_stats()
+
+    # Merge user profile with credit stats
+    return {
+        # User profile
+        "user_id": str(current_user.user_id),
+        "username": current_user.username,
+        "email": current_user.email,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
+        "engine": current_user.engine,
+        "voice_id": current_user.voice_id,
+        "is_active": current_user.is_active,
+        "email_verified": current_user.email_verified,
+        "created_at": current_user.created_at.isoformat() if current_user.created_at else None,
+        "last_login": current_user.last_login.isoformat() if current_user.last_login else None,
+
+        # Legacy field (deprecated but kept for backward compatibility)
+        "remaining_chars": current_user.remaining_chars,
+
+        # Credit info (from credit_stats)
+        "credit_balance": credit_stats["credit_balance"],
+        "tier": credit_stats["tier"],
+        "can_use_polly": credit_stats["can_use_polly"],
+
+        # Expiration info
+        "next_expiration": credit_stats["next_expiration"],
+        "days_until_expiration": credit_stats["days_until_expiration"],
+
+        # Transaction details
+        "active_transactions": credit_stats["active_transactions"],
+        "total_transactions": credit_stats["total_transactions"]
+    }
 
 @user_router.get("/preferences")
 async def get_preferences(current_user: User = Depends(get_current_user)):
@@ -931,12 +957,17 @@ async def create_credit_checkout(
 
 @payment_router.get("/credit-balance")
 async def get_credit_balance(current_user: User = Depends(get_current_user)):
-    """Get user's current credit balance and stats"""
-    return {
-        "credit_balance": current_user.credit_balance,
-        "tier": current_user.tier.value.lower() if current_user.tier else "free",
-        "can_use_polly": current_user.tier.value != "FREE" if current_user.tier else False
-    }
+    """
+    Get user's current credit balance, tier, and expiration info.
+
+    Returns transaction details including:
+    - Total active credits
+    - Current tier (dynamic based on total credits)
+    - Next expiration date for countdown
+    - Days until expiration
+    - All active transactions with individual expiration dates
+    """
+    return current_user.get_credit_stats()
 
 @payment_router.post("/stripe_webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):

@@ -713,19 +713,25 @@ class StripeService:
                 from models import UserTier
 
                 if purchase_type == "credits":
-                    # Handle credit purchase
+                    # Handle credit purchase with transaction ledger
                     credits = int(metadata.get("credits", 0))
-                    tier = metadata.get("tier", "free")
 
-                    # Add credits to user balance and update tier
-                    # Light tier users get Premium features (just fewer credits)
-                    if tier == "light" or tier == "premium":
-                        user.purchase_credits(credits, UserTier.PREMIUM)
-                    elif tier == "pro":
-                        user.purchase_credits(credits, UserTier.PRO)
+                    # Get payment details from session
+                    amount_total = session.get("amount_total", 0)  # in cents
+                    payment_intent_id = session.get("payment_intent")  # Stripe payment intent ID
+                    session_id = session.get("id")  # Stripe session ID
+
+                    # Create credit transaction with 1-year expiration
+                    # This automatically calculates tier based on total active credits
+                    transaction = user.purchase_credits(
+                        credit_amount=credits,
+                        purchase_price=amount_total,  # Store price in cents
+                        stripe_payment_id=payment_intent_id,
+                        stripe_session_id=session_id
+                    )
 
                     db.commit()
-                    logger.info(f"✅ Added {credits} credits to user {username} ({tier} tier)")
+                    logger.info(f"✅ Created credit transaction for user {username}: {credits} credits, expires {transaction.expires_at.date()}, new tier: {user.tier.value}")
 
                 else:
                     # Handle subscription purchase (legacy)
