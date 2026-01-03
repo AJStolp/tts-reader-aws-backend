@@ -662,7 +662,10 @@ def enterprise_security_middleware(security_manager: EnterpriseSecurityManager):
 enterprise_security = EnterpriseSecurityManager()
 
 # FIXED: Security configuration constants - More lenient for development
-CORS_ALLOWED_ORIGINS_ENV = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000","http://localhost:3001","http://127.0.0.1:3000","http://127.0.0.1:3001")
+CORS_ALLOWED_ORIGINS_ENV = os.getenv(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001,https://ttsaudify.com,https://www.ttsaudify.com"
+)
 ENTERPRISE_SECURITY_CONFIG = {
     "RATE_LIMIT_REQUESTS_PER_HOUR": 500,  # Increased from 100
     "MAX_CONTENT_LENGTH_BYTES": 500000,
