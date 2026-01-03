@@ -1,4 +1,5 @@
 import logging
+import os
 import secrets
 import time
 from datetime import datetime, timezone, timedelta
@@ -661,6 +662,7 @@ def enterprise_security_middleware(security_manager: EnterpriseSecurityManager):
 enterprise_security = EnterpriseSecurityManager()
 
 # FIXED: Security configuration constants - More lenient for development
+CORS_ALLOWED_ORIGINS_ENV = os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000","http://localhost:3001","http://127.0.0.1:3000","http://127.0.0.1:3001")
 ENTERPRISE_SECURITY_CONFIG = {
     "RATE_LIMIT_REQUESTS_PER_HOUR": 500,  # Increased from 100
     "MAX_CONTENT_LENGTH_BYTES": 500000,
@@ -673,13 +675,7 @@ ENTERPRISE_SECURITY_CONFIG = {
     "MFA_REQUIRED_FOR_ADMIN": True,
     "IP_WHITELIST_ENABLED": False,
     "CONTENT_SECURITY_POLICY_ENABLED": True,
-    "CORS_ALLOWED_ORIGINS": [
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "https://yourdomain.com"
-    ],
+    "CORS_ALLOWED_ORIGINS": CORS_ALLOWED_ORIGINS_ENV.split(","),
     "SECURE_HEADERS_ENABLED": True,
     "TLS_VERSION_MIN": "1.2",
     "HSTS_MAX_AGE_SECONDS": 31536000,

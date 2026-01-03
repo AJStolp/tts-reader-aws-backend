@@ -18,38 +18,32 @@ class EnterpriseConfig(BaseSettings):
     PORT: int = 5000
     WORKERS: int = 4
     RELOAD: bool = False
+
+    # Frontend Configuration
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:3000")
     
     # Database Configuration - Supporting both old and new formats
-    DATABASE_URL: str = "sqlite:///./database.db"
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./database.db")
     DATABASE_CONNECTION_STRING: Optional[str] = None  # Legacy support
     SUPABASE_URL: Optional[str] = None
     SUPABASE_KEY: Optional[str] = None
     
     # AWS Configuration
-    AWS_ACCESS_KEY_ID: str = ""
-    AWS_SECRET_ACCESS_KEY: str = ""
-    AWS_REGION: str = "us-east-1"
-    S3_BUCKET_NAME: str = "tts-neural-reader-data"
+    AWS_ACCESS_KEY_ID: str = os.getenv("AWS_ACCESS_KEY_ID", "")
+    AWS_SECRET_ACCESS_KEY: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
+    S3_BUCKET_NAME: str = os.getenv("S3_BUCKET_NAME", "tts-neural-reader-data")
     
     # Authentication & Security - Supporting both old and new formats
-    SECRET_KEY: str = "your-super-secret-key-change-in-production"
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
     JWT_SECRET_KEY: Optional[str] = None  # Legacy support
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     
+    ALLOW_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000","http://localhost:3001","http://127.0.0.1:3000","http://127.0.0.1:3001","http://localhost:8080","http://127.0.0.1:8080","https://yourdomain.com","https://app.yourdomain.com")
     # FIXED: CORS Configuration - Allow localhost for development
-    ALLOWED_ORIGINS: List[str] = [
-        "http://localhost:3000",
-        "http://localhost:3001", 
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-        "https://yourdomain.com",
-        "https://app.yourdomain.com",
-        "*" if os.getenv("DEVELOPMENT_MODE", "true").lower() == "true" else "https://yourdomain.com"
-    ]
+    ALLOWED_ORIGINS: List[str] = ALLOW_ORIGINS_ENV.split(",")
     
     # TTS Configuration
     MAX_POLLY_CHARS: int = 3000
@@ -77,10 +71,9 @@ class EnterpriseConfig(BaseSettings):
     USAGE_WARNING_THRESHOLD: float = 80.0  # Warn at 80% usage
     
     # Stripe Configuration
-    STRIPE_API_KEY: str = ""
-    STRIPE_WEBHOOK_SECRET: str = ""
-    WEBAPP_URL: str = os.getenv("WEBAPP_URL", "http://localhost:3000")
-
+    STRIPE_API_KEY: str = os.getenv("STRIPE_API_KEY", "")
+    STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    
     # Content Extraction Configuration
     MAX_EXTRACTION_RETRIES: int = 3
     EXTRACTION_TIMEOUT: int = 30
@@ -97,7 +90,7 @@ class EnterpriseConfig(BaseSettings):
     ENCRYPTION_ENABLED: bool = True
     
     # FIXED: Development Environment Detection
-    DEVELOPMENT_MODE: bool = True  # Set to False in production
+    DEVELOPMENT_MODE: bool = os.getenv("DEVELOPMENT_MODE", "false").lower() == "true"
     ALLOW_LOCALHOST: bool = True   # Allow localhost in development
     
     # Security Thresholds

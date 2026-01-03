@@ -146,7 +146,7 @@ class AuthManager:
                 return False
 
             # Create verification URL
-            verification_url = f"http://localhost:5000/verify-email?token={verification_token}"
+            verification_url = f"{config.FRONTEND_URL}/email-verification?token={verification_token}"
             print(f"{verification_url=}")
 
             # Create message
