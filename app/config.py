@@ -41,8 +41,11 @@ class EnterpriseConfig(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     
-    ALLOW_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000","http://localhost:3001","http://127.0.0.1:3000","http://127.0.0.1:3001","http://localhost:8080","http://127.0.0.1:8080","https://yourdomain.com","https://app.yourdomain.com")
     # FIXED: CORS Configuration - Allow localhost for development
+    ALLOW_ORIGINS_ENV = os.getenv(
+        "ALLOWED_ORIGINS",
+        "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001,http://localhost:8080,http://127.0.0.1:8080,https://yourdomain.com,https://app.yourdomain.com,https://ttsaudify.com,https://www.ttsaudify.com"
+    )
     ALLOWED_ORIGINS: List[str] = ALLOW_ORIGINS_ENV.split(",")
     
     # TTS Configuration
