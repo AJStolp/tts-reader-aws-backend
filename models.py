@@ -123,6 +123,7 @@ class User(Base):
     # Subscription management
     stripe_subscription_id = Column(String(128), nullable=True)
     stripe_price_id = Column(String(128), nullable=True)
+    stripe_customer_id = Column(String(128), nullable=True)
 
     # Tier and usage tracking
     tier = Column(Enum(UserTier), default=UserTier.FREE, nullable=False)

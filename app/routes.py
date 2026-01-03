@@ -969,6 +969,40 @@ async def get_credit_balance(current_user: User = Depends(get_current_user)):
     """
     return current_user.get_credit_stats()
 
+@payment_router.post("/create-billing-portal-session")
+async def create_billing_portal_session(
+    current_user: User = Depends(get_current_user)
+):
+    """Create a Stripe billing portal session for the user to manage billing and invoices
+
+    Returns:
+        dict: Contains the URL to redirect the user to the Stripe billing portal
+
+    Raises:
+        HTTPException: 400 if user has no billing history, 500 if portal creation fails
+    """
+    try:
+        # Import config to get WEBAPP_URL
+        from config import Settings
+        settings = Settings()
+
+        # Create return URL to usage page
+        return_url = f"{settings.WEBAPP_URL}/usage.html"
+
+        # Create billing portal session
+        portal_url = await stripe_service.create_billing_portal_session(
+            user=current_user,
+            return_url=return_url
+        )
+
+        return {"url": portal_url}
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ Error creating billing portal session: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create billing portal session")
+
 @payment_router.post("/stripe_webhook")
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     """Handle Stripe webhook events with tier management"""
