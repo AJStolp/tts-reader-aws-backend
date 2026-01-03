@@ -706,6 +706,12 @@ class StripeService:
             user = db.query(User).filter(User.username == username).first()
 
             if user:
+                # Store Stripe customer ID if not already stored
+                customer_id = session.get("customer")
+                if customer_id and not user.stripe_customer_id:
+                    user.stripe_customer_id = customer_id
+                    logger.info(f"✅ Stored Stripe customer ID for user {username}")
+
                 metadata = session.get("metadata", {})
                 purchase_type = metadata.get("purchase_type", "subscription")
 
@@ -787,6 +793,33 @@ class StripeService:
                     logger.info(f"✅ Updated tier ({tier}) for user {user.username}")
 
         return {"status": "success"}
+
+    async def create_billing_portal_session(self, user: 'User', return_url: str) -> str:
+        """Create a Stripe billing portal session for the user to manage their billing
+
+        Args:
+            user: The User object containing stripe_customer_id
+            return_url: URL to redirect to after the user is done in the portal
+
+        Returns:
+            str: The URL of the billing portal session
+
+        Raises:
+            ValueError: If user doesn't have a Stripe customer ID
+        """
+        if not user.stripe_customer_id:
+            raise ValueError("No billing history found. Please make a purchase first.")
+
+        try:
+            session = stripe.billing_portal.Session.create(
+                customer=user.stripe_customer_id,
+                return_url=return_url
+            )
+            logger.info(f"✅ Created billing portal session for user {user.username}")
+            return session.url
+        except stripe.error.StripeError as e:
+            logger.error(f"❌ Error creating billing portal session: {str(e)}")
+            raise ValueError(f"Failed to create billing portal session: {str(e)}")
 
 class AnalyticsService:
     """Service for analytics and reporting"""

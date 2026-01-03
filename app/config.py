@@ -79,7 +79,8 @@ class EnterpriseConfig(BaseSettings):
     # Stripe Configuration
     STRIPE_API_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
-    
+    WEBAPP_URL: str = os.getenv("WEBAPP_URL", "http://localhost:3000")
+
     # Content Extraction Configuration
     MAX_EXTRACTION_RETRIES: int = 3
     EXTRACTION_TIMEOUT: int = 30
