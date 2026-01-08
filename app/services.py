@@ -614,8 +614,8 @@ class StripeService:
                     }
                 ],
                 mode="subscription",
-                success_url="{config.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}",
-                cancel_url="{config.FRONTEND_URL}/pricing",
+                success_url=f"{config.FRONTEND_URL}/success?session_id={{CHECKOUT_SESSION_ID}}",
+                cancel_url=f"{config.FRONTEND_URL}/pricing",
                 client_reference_id=username,
                 customer_email=user_email,
                 metadata={
@@ -668,8 +668,8 @@ class StripeService:
                     }
                 ],
                 mode="payment",  # One-time payment
-                success_url="{config.FRONTEND_URL}/success?session_id={CHECKOUT_SESSION_ID}",
-                cancel_url="{config.FRONTEND_URL}/pricing",
+                success_url=f"{config.FRONTEND_URL}/success?session_id={{CHECKOUT_SESSION_ID}}",
+                cancel_url=f"{config.FRONTEND_URL}/pricing",
                 client_reference_id=username,
                 customer_email=user_email,
                 metadata={
