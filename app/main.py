@@ -1,6 +1,19 @@
 """
 Main FastAPI application for TTS Reader API - Enhanced with Enterprise Security
 """
+# Bcrypt compatibility patch for passlib 1.7.4 with bcrypt 4.0+
+# This fixes: AttributeError: module 'bcrypt' has no attribute '__about__'
+import sys
+try:
+    import bcrypt
+    if not hasattr(bcrypt, '__about__'):
+        # Create a mock __about__ module for passlib compatibility
+        class _BcryptAbout:
+            __version__ = bcrypt.__version__
+        bcrypt.__about__ = _BcryptAbout()
+except ImportError:
+    pass
+
 import logging
 from contextlib import asynccontextmanager
 from typing import Callable
