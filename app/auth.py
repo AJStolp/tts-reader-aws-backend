@@ -20,8 +20,12 @@ from models import User
 
 logger = logging.getLogger(__name__)
 
-# Security configuration
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Security configuration with automatic truncation for bcrypt
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__truncate_error=False  # Auto-truncate passwords longer than 72 bytes
+)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/token")
 
 class AuthManager:
