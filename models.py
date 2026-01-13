@@ -1,22 +1,19 @@
 import uuid
 import secrets
+import logging
+import bcrypt
 from datetime import datetime, timedelta
 from sqlalchemy import Column, String, Integer, DateTime, Boolean, Enum, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from passlib.context import CryptContext
 import enum
+
+# Set up logger
+logger = logging.getLogger(__name__)
 
 # Create Base here to avoid circular imports
 Base = declarative_base()
-
-# Password hashing context with automatic truncation for bcrypt
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto",
-    bcrypt__truncate_error=False  # Auto-truncate passwords longer than 72 bytes
-)
 
 # Tier enumeration
 class UserTier(enum.Enum):
@@ -160,10 +157,35 @@ class User(Base):
             raise ValueError("Password cannot be empty")
 
         # Truncate password to 72 bytes for bcrypt compatibility
-        password_bytes = password.encode('utf-8')[:72]
-        password_truncated = password_bytes.decode('utf-8', errors='ignore')
+        # Use a safer truncation that respects UTF-8 boundaries
+        password_bytes = password.encode('utf-8')
+        logger.debug(f"set_password: Original password length: {len(password)} chars, {len(password_bytes)} bytes")
 
-        self.password_hash = pwd_context.hash(password_truncated)
+        if len(password_bytes) > 72:
+            # Find a valid UTF-8 boundary within 72 bytes
+            truncated_bytes = password_bytes[:72]
+            # Decode with replace to handle any invalid sequences
+            password_to_hash = truncated_bytes.decode('utf-8', errors='replace')
+            # If that created replacement characters, try backing up to find valid boundary
+            if '\ufffd' in password_to_hash:
+                for i in range(71, 60, -1):  # Try backing up max 12 bytes
+                    try:
+                        password_to_hash = password_bytes[:i].decode('utf-8')
+                        break
+                    except UnicodeDecodeError:
+                        continue
+        else:
+            password_to_hash = password
+
+        logger.debug(f"set_password: Will hash password of length: {len(password_to_hash)} chars, {len(password_to_hash.encode('utf-8'))} bytes")
+
+        # Use bcrypt directly to avoid passlib compatibility issues with bcrypt 5.0
+        password_bytes = password_to_hash.encode('utf-8')
+        salt = bcrypt.gensalt()
+        hashed = bcrypt.hashpw(password_bytes, salt)
+        self.password_hash = hashed.decode('utf-8')  # Store as string
+
+        logger.debug(f"set_password: Hash created successfully")
     
     def check_password(self, password: str) -> bool:
         """
@@ -176,13 +198,37 @@ class User(Base):
             bool: True if password matches, False otherwise
         """
         if not password or not self.password_hash:
+            logger.debug(f"check_password: Empty password or hash")
             return False
 
-        # Truncate password to 72 bytes for bcrypt compatibility
-        password_bytes = password.encode('utf-8')[:72]
-        password_truncated = password_bytes.decode('utf-8', errors='ignore')
+        # Truncate password to 72 bytes for bcrypt compatibility (same logic as set_password)
+        password_bytes = password.encode('utf-8')
+        if len(password_bytes) > 72:
+            truncated_bytes = password_bytes[:72]
+            password_to_verify = truncated_bytes.decode('utf-8', errors='replace')
+            if '\ufffd' in password_to_verify:
+                for i in range(71, 60, -1):
+                    try:
+                        password_to_verify = password_bytes[:i].decode('utf-8')
+                        break
+                    except UnicodeDecodeError:
+                        continue
+        else:
+            password_to_verify = password
 
-        return pwd_context.verify(password_truncated, self.password_hash)
+        logger.debug(f"check_password: Password length: {len(password)} chars, {len(password_bytes)} bytes")
+        logger.debug(f"check_password: Will verify with: {len(password_to_verify)} chars")
+
+        try:
+            # Use bcrypt directly
+            password_bytes_to_verify = password_to_verify.encode('utf-8')
+            stored_hash_bytes = self.password_hash.encode('utf-8')
+            result = bcrypt.checkpw(password_bytes_to_verify, stored_hash_bytes)
+            logger.debug(f"check_password: Verification result: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"check_password: Verification error: {e}")
+            return False
     
     def update_last_login(self) -> None:
         """Update the last login timestamp"""
