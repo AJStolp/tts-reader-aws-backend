@@ -11,8 +11,12 @@ import enum
 # Create Base here to avoid circular imports
 Base = declarative_base()
 
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing context with automatic truncation for bcrypt
+pwd_context = CryptContext(
+    schemes=["bcrypt"],
+    deprecated="auto",
+    bcrypt__truncate_error=False  # Auto-truncate passwords longer than 72 bytes
+)
 
 # Tier enumeration
 class UserTier(enum.Enum):
