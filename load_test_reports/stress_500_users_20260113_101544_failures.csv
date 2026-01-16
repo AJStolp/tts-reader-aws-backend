@@ -1,0 +1,5 @@
+Method,Name,Error,Occurrences
+GET,/api/health,"ConnectionResetError(54, 'Connection reset by peer')",4
+POST,/api/login,HTTPError('422 Client Error: Unprocessable Entity for url: /api/login'),189
+POST,/api/register,HTTPError('422 Client Error: Unprocessable Entity for url: /api/register'),77
+POST,/api/login[returning],HTTPError('422 Client Error: Unprocessable Entity for url: /api/login[returning]'),97

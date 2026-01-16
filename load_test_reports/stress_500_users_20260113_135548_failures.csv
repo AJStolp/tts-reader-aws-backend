@@ -1,0 +1,5 @@
+Method,Name,Error,Occurrences
+POST,/api/login,HTTPError('401 Client Error: Unauthorized for url: /api/login'),5
+GET,/api/pricing-tiers,HTTPError('500 Server Error: Internal Server Error for url: /api/pricing-tiers'),4
+GET,/api/health,"ConnectionResetError(54, 'Connection reset by peer')",2
+POST,/api/synthesize,HTTPError('422 Client Error: Unprocessable Entity for url: /api/synthesize'),3
