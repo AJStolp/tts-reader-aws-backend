@@ -28,13 +28,16 @@ logger = logging.getLogger(__name__)
 
 class AWSService:
     """Service for AWS operations (S3, Polly, etc.) - Enhanced for TTS"""
-    
+
     def __init__(self):
         self.session = None
         self.s3 = None
         self.polly = None
         self.bucket_name = config.S3_BUCKET_NAME
         self._initialize_aws()
+
+        # Check if we should use mock services for load testing
+        self._check_test_mode()
     
     def _initialize_aws(self):
         """Initialize AWS clients with error handling"""
@@ -56,6 +59,21 @@ class AWSService:
         except (NoCredentialsError, ClientError) as e:
             logger.error(f"❌ AWS configuration error: {str(e)}")
             raise ValueError("Invalid AWS credentials or configuration")
+
+    def _check_test_mode(self):
+        """Check if load test mode is enabled and switch to mock services"""
+        import os
+        load_test_mode = os.getenv("LOAD_TEST_MODE", "false").lower() == "true"
+
+        if load_test_mode:
+            from .mock_services import MockS3, MockPolly
+            logger.warning("=" * 80)
+            logger.warning("🧪 LOAD TEST MODE ENABLED")
+            logger.warning("   AWS Polly and S3 will be mocked (no charges)")
+            logger.warning("=" * 80)
+
+            self.s3 = MockS3()
+            self.polly = MockPolly()
     
     async def setup_bucket(self):
         """Setup S3 bucket with proper configuration for TTS files"""
@@ -143,47 +161,42 @@ class AWSService:
         return chunks
     
     async def get_voices(self) -> Dict[str, List[Dict]]:
-        """Get available Polly voices grouped by engine for TTS"""
+        """Get all available Polly standard voices (all English variants)"""
         try:
+            # Get all voices (no language filter to get all English variants)
             response = await asyncio.to_thread(
-                self.polly.describe_voices,
-                LanguageCode="en-US"
+                self.polly.describe_voices
             )
-            
+
             standard_voices = []
-            neural_voices = []
-            long_form_voices = []
-            
+
+            # English language codes we support
+            english_codes = ["en-US", "en-GB", "en-AU", "en-IN", "en-NZ", "en-ZA", "en-GB-WLS"]
+
             for voice in response["Voices"]:
-                voice_data = {
-                    "id": voice["Id"],
-                    "name": voice["Name"],
-                    "gender": voice["Gender"],
-                    "language": voice["LanguageName"],
-                    "tts_optimized": True,
-                    "supports_speech_marks": True
-                }
-                
+                # Only include English voices that support standard engine
                 supported_engines = voice["SupportedEngines"]
-                
-                if "standard" in supported_engines:
+                language_code = voice.get("LanguageCode", "")
+
+                if "standard" in supported_engines and language_code in english_codes:
+                    voice_data = {
+                        "id": voice["Id"],
+                        "name": voice["Name"],
+                        "gender": voice["Gender"],
+                        "language": voice["LanguageName"],
+                        "language_code": language_code,
+                        "engine": "standard",
+                        "tts_optimized": True,
+                        "supports_speech_marks": True
+                    }
                     standard_voices.append(voice_data)
-                
-                if "neural" in supported_engines:
-                    neural_voices.append({**voice_data, "quality": "high"})
-                
-                if "long-form" in supported_engines:
-                    long_form_voices.append({**voice_data, "quality": "premium"})
-            
-            return {
-                "standard": standard_voices,
-                "neural": neural_voices,
-                "long_form": long_form_voices,
-                "all": standard_voices + neural_voices + long_form_voices,
-                "recommendation": "Neural voices provide more natural TTS output with better speech mark accuracy",
-                "total_count": len(standard_voices + neural_voices + long_form_voices)
-            }
-            
+
+            # Sort by language, then name for better UX
+            standard_voices.sort(key=lambda v: (v["language_code"], v["name"]))
+
+            logger.info(f"✅ Loaded {len(standard_voices)} standard English voices")
+            return standard_voices
+
         except Exception as e:
             logger.error(f"❌ Error fetching voices: {str(e)}")
             raise
