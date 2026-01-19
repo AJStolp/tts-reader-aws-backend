@@ -514,66 +514,66 @@ class CreditConfig:
     PRO_CREDIT_THRESHOLD = 10000  # 10,000+ credits = Pro tier
 
     # Pricing rates per credit
-    LIGHT_RATE = 0.01  # $0.01 per credit (~$10 per 1,000 credits)
-    PREMIUM_RATE = 0.01  # $0.01 per credit (~$10 per 1,000 credits)
-    PRO_RATE = 0.01  # $0.01 per credit (~$10 per 1,000 credits)
+    LIGHT_RATE = 0.012  # $0.012 per credit (~$12 per 1,000 credits)
+    PREMIUM_RATE = 0.012  # $0.012 per credit (~$12 per 1,000 credits)
+    PRO_RATE = 0.012  # $0.012 per credit (~$12 per 1,000 credits)
 
     # Predefined credit packages (examples for frontend)
     CREDIT_PACKAGES = [
         {
             "credits": 500,
             "tier": "light",
-            "price": 5.00,
+            "price": 6.00,
             "characters": 500_000,
-            "rate": 0.01,
+            "rate": 0.012,
             "description": "Audiobook package - Perfect for one book (~8-10 hours)"
         },
         {
             "credits": 1000,
             "tier": "light",
-            "price": 10.00,
+            "price": 12.00,
             "characters": 1_000_000,
-            "rate": 0.01,
+            "rate": 0.012,
             "description": "Light usage - 2-3 audiobooks"
         },
         {
             "credits": 2000,
             "tier": "premium",
-            "price": 20.00,
+            "price": 24.00,
             "characters": 2_000_000,
-            "rate": 0.01,
+            "rate": 0.012,
             "description": "Regular package - Great for weekly use"
         },
         {
             "credits": 5000,
             "tier": "premium",
-            "price": 50.00,
+            "price": 60.00,
             "characters": 5_000_000,
-            "rate": 0.01,
+            "rate": 0.012,
             "description": "Popular package - Heavy monthly usage"
         },
         {
             "credits": 10000,
             "tier": "pro",
-            "price": 100.00,
+            "price": 120.00,
             "characters": 10_000_000,
-            "rate": 0.01,
+            "rate": 0.012,
             "description": "Pro package - Best value for power users"
         },
         {
             "credits": 25000,
             "tier": "pro",
-            "price": 250.00,
+            "price": 300.00,
             "characters": 25_000_000,
-            "rate": 0.01,
+            "rate": 0.012,
             "description": "Premium package - For heavy usage"
         },
         {
             "credits": 50000,
             "tier": "pro",
-            "price": 500.00,
+            "price": 600.00,
             "characters": 50_000_000,
-            "rate": 0.01,
+            "rate": 0.012,
             "description": "Enterprise package - Maximum credits"
         }
     ]
@@ -594,8 +594,8 @@ class CreditConfig:
         if credits > CreditConfig.CREDIT_MAX:
             raise ValueError(f"Maximum purchase is {CreditConfig.CREDIT_MAX} credits (50M characters)")
 
-        # All tiers now use the same rate of $0.01 per credit
-        rate = 0.01
+        # All tiers now use the same rate of $0.012 per credit
+        rate = 0.012
 
         return round(credits * rate, 2)
 
