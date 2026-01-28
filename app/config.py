@@ -322,6 +322,10 @@ class EnterpriseConfig(BaseSettings):
     GOOGLE_ANALYTICS_ID: Optional[str] = None
     SENTRY_ENABLED: bool = False
     SENTRY_DSN: Optional[str] = None
+
+    # Dittofeed Integration (self-hosted lifecycle messaging)
+    DITTOFEED_WRITE_KEY: str = os.getenv("DITTOFEED_WRITE_KEY", "")
+    DITTOFEED_API_BASE: str = os.getenv("DITTOFEED_API_BASE", "https://dittofeed.logantaylorandkitties.com")
     
     class Config:
         env_file = ".env"

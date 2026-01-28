@@ -18,6 +18,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import create_engine, and_
 from sqlalchemy.orm import sessionmaker, Session
 from models import User, CreditTransaction, TransactionStatus, UserTier
+from app.dittofeed import dittofeed_service, fire_and_forget
 from app.config import config
 import logging
 
@@ -236,6 +237,18 @@ def send_expiration_warnings(db: Session) -> Tuple[int, int]:
             transaction.expires_at
         )
         thirty_day_count += 1
+        fire_and_forget(dittofeed_service.track(
+            user_id=str(transaction.user.user_id),
+            event="Credit Expiration Warning",
+            properties={
+                "username": transaction.user.username,
+                "email": transaction.user.email,
+                "creditsExpiring": transaction.credits_remaining,
+                "daysRemaining": days_remaining,
+                "expiresAt": transaction.expires_at.isoformat(),
+                "warningType": "30_day",
+            }
+        ))
 
     seven_day_count = 0
     for transaction in seven_day_warnings:
@@ -247,6 +260,18 @@ def send_expiration_warnings(db: Session) -> Tuple[int, int]:
             transaction.expires_at
         )
         seven_day_count += 1
+        fire_and_forget(dittofeed_service.track(
+            user_id=str(transaction.user.user_id),
+            event="Credit Expiration Warning",
+            properties={
+                "username": transaction.user.username,
+                "email": transaction.user.email,
+                "creditsExpiring": transaction.credits_remaining,
+                "daysRemaining": days_remaining,
+                "expiresAt": transaction.expires_at.isoformat(),
+                "warningType": "7_day",
+            }
+        ))
 
     logger.info(f"✅ Sent {thirty_day_count} 30-day warnings and {seven_day_count} 7-day warnings")
 

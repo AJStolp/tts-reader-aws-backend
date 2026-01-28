@@ -17,6 +17,7 @@ from pydub import AudioSegment
 from sqlalchemy.orm import Session
 
 from .config import config, TierConfig
+from .dittofeed import dittofeed_service, fire_and_forget
 from .models import (
     ExtractionProgress, ExtractionPreview, ExtractResponseEnhanced,
     SynthesizeResponse, AnalyticsResponse
@@ -751,6 +752,29 @@ class StripeService:
 
                     db.commit()
                     logger.info(f"✅ Created credit transaction for user {username}: {credits} credits, expires {transaction.expires_at.date()}, new tier: {user.tier.value}")
+
+                    # Track credit purchase in Dittofeed
+                    fire_and_forget(dittofeed_service.identify(
+                        user_id=str(user.user_id),
+                        traits={
+                            "tier": user.tier.value.lower() if user.tier else "free",
+                            "creditBalance": user.credit_balance,
+                            "email": user.email,
+                            "username": user.username,
+                        }
+                    ))
+                    fire_and_forget(dittofeed_service.track(
+                        user_id=str(user.user_id),
+                        event="Credit Purchase Completed",
+                        properties={
+                            "username": username,
+                            "credits": credits,
+                            "tier": user.tier.value.lower() if user.tier else "free",
+                            "purchasePrice": amount_total,
+                            "stripePaymentId": payment_intent_id,
+                            "stripeSessionId": session_id,
+                        }
+                    ))
 
                 else:
                     # Handle subscription purchase (legacy)
