@@ -15,6 +15,7 @@ from passlib.context import CryptContext
 from sqlalchemy.orm import Session
 
 from .config import config
+from .dittofeed import dittofeed_service, fire_and_forget
 from database import get_db
 from models import User
 
@@ -312,6 +313,30 @@ def create_user_account(user_data: dict, db: Session) -> User:
         db.commit()
         db.refresh(db_user)
 
+        # Track new user in Dittofeed
+        fire_and_forget(dittofeed_service.identify(
+            user_id=str(db_user.user_id),
+            traits={
+                "email": db_user.email,
+                "username": db_user.username,
+                "firstName": db_user.first_name,
+                "lastName": db_user.last_name,
+                "tier": "free",
+                "emailVerified": False,
+                "createdAt": db_user.created_at.isoformat() if db_user.created_at else None,
+            }
+        ))
+        fire_and_forget(dittofeed_service.track(
+            user_id=str(db_user.user_id),
+            event="User Signed Up",
+            properties={
+                "username": db_user.username,
+                "email": db_user.email,
+                "firstName": db_user.first_name,
+                "lastName": db_user.last_name,
+            }
+        ))
+
         # Send verification email
         print(f"email about to be sent")
         email_sent = auth_manager.send_verification_email(db_user, verification_token)
@@ -354,6 +379,24 @@ def verify_user_email(token: str, db: Session) -> dict:
         # Mark email as verified
         user.mark_email_verified()
         db.commit()
+
+        # Update Dittofeed profile and track verification
+        fire_and_forget(dittofeed_service.identify(
+            user_id=str(user.user_id),
+            traits={
+                "emailVerified": True,
+                "email": user.email,
+                "username": user.username,
+            }
+        ))
+        fire_and_forget(dittofeed_service.track(
+            user_id=str(user.user_id),
+            event="Email Verified",
+            properties={
+                "username": user.username,
+                "email": user.email,
+            }
+        ))
 
         logger.info(f"Email verified successfully for user: {user.username}")
         return {

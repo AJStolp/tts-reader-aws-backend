@@ -21,6 +21,7 @@ from .models import (
 from .services import (
     aws_service, extraction_service, tts_service, stripe_service, analytics_service
 )
+from .dittofeed import dittofeed_service, fire_and_forget
 
 # FIXED: Import the enhanced extraction service properly with better error handling
 try:
@@ -109,7 +110,29 @@ async def login(request: Request, user_data: UserLogin, db: Session = Depends(ge
     # Update last login
     db_user.update_last_login()
     db.commit()
-    
+
+    # Update Dittofeed profile and track login
+    fire_and_forget(dittofeed_service.identify(
+        user_id=str(db_user.user_id),
+        traits={
+            "email": db_user.email,
+            "username": db_user.username,
+            "tier": db_user.tier.value.lower() if db_user.tier else "free",
+            "creditBalance": db_user.credit_balance,
+            "lastLogin": datetime.utcnow().isoformat(),
+            "emailVerified": db_user.email_verified,
+        }
+    ))
+    fire_and_forget(dittofeed_service.track(
+        user_id=str(db_user.user_id),
+        event="User Logged In",
+        properties={
+            "username": db_user.username,
+            "tier": db_user.tier.value.lower() if db_user.tier else "free",
+            "creditBalance": db_user.credit_balance,
+        }
+    ))
+
     # Create tokens
     access_token = auth_manager.create_access_token(data={"sub": db_user.username})
     refresh_token = auth_manager.create_refresh_token(db_user.username)
