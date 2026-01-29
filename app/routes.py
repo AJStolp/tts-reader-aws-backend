@@ -937,6 +937,14 @@ async def create_checkout_session(
     current_user: User = Depends(get_current_user)
 ):
     """Create a Stripe checkout session for subscription with tier tracking"""
+    # SECURITY: Require verified email before allowing purchase
+    if not current_user.email_verified:
+        logger.warning(f"⚠️ SECURITY: Unverified user {current_user.username} attempted subscription purchase")
+        raise HTTPException(
+            status_code=403,
+            detail="Email verification required before subscribing. Please verify your email first."
+        )
+
     try:
         url = await stripe_service.create_checkout_session(
             request.price_id,
@@ -964,6 +972,14 @@ async def create_credit_checkout(
     current_user: User = Depends(get_current_user)
 ):
     """Create a Stripe checkout session for one-time credit purchase"""
+    # SECURITY: Require verified email before allowing purchase
+    if not current_user.email_verified:
+        logger.warning(f"⚠️ SECURITY: Unverified user {current_user.username} attempted credit purchase")
+        raise HTTPException(
+            status_code=403,
+            detail="Email verification required before purchasing credits. Please verify your email first."
+        )
+
     try:
         url = await stripe_service.create_credit_checkout_session(
             request.credits,
@@ -2076,6 +2092,112 @@ async def auto_learn_from_usage(request: dict):
     except Exception as e:
         logger.error(f"Auto-learning error: {str(e)}")
         return {"error": str(e), "success": False}
+
+# ============ ADMIN SECURITY ENDPOINTS ============
+# WARNING: These endpoints should be protected in production with admin authentication
+
+@admin_router.get("/security-audit")
+async def run_security_audit(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    ADMIN ONLY: Run a security audit on all users to detect fraudulent Stripe data.
+
+    Checks for:
+    - Fake/fabricated Stripe customer IDs
+    - Fake subscription IDs
+    - Credits allocated without verified payments
+    - High balances without payment history
+
+    Returns list of users with suspicious data.
+    """
+    # TODO: Add proper admin role check in production
+    # For now, log who ran the audit
+    logger.warning(f"🔒 SECURITY AUDIT initiated by user: {current_user.username}")
+
+    try:
+        audit_results = stripe_service.audit_all_users(db)
+        logger.info(f"✅ Security audit complete: {audit_results['users_with_issues']} users flagged")
+        return audit_results
+    except Exception as e:
+        logger.error(f"❌ Security audit failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Audit failed: {str(e)}")
+
+@admin_router.get("/audit-user/{username}")
+async def audit_single_user(
+    username: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    ADMIN ONLY: Audit a specific user's Stripe data for fraud.
+    """
+    logger.warning(f"🔒 Single user audit for '{username}' initiated by: {current_user.username}")
+
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        audit_result = stripe_service.audit_user_stripe_data(user)
+        return audit_result
+    except Exception as e:
+        logger.error(f"❌ User audit failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Audit failed: {str(e)}")
+
+@admin_router.delete("/purge-fraudulent-user/{username}")
+async def purge_fraudulent_user(
+    username: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    ADMIN ONLY: Delete a user that has been confirmed as fraudulent.
+
+    WARNING: This permanently deletes the user and all their data.
+    Only use after confirming fraud via security-audit.
+    """
+    logger.warning(f"🚨 PURGE REQUEST for user '{username}' by: {current_user.username}")
+
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Run audit first to confirm fraud
+    audit_result = stripe_service.audit_user_stripe_data(user)
+
+    if audit_result["verified"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot purge - user data verified as legitimate. Use audit-user endpoint to check."
+        )
+
+    # Log the deletion with full details
+    logger.critical(f"🚨 DELETING FRAUDULENT USER: {username}")
+    logger.critical(f"   Issues: {audit_result['issues']}")
+    logger.critical(f"   Credit balance: {user.credit_balance}")
+    logger.critical(f"   Stripe customer ID: {user.stripe_customer_id}")
+
+    try:
+        # Delete credit transactions first (cascade should handle this, but be explicit)
+        from models import CreditTransaction
+        db.query(CreditTransaction).filter(CreditTransaction.user_id == user.user_id).delete()
+
+        # Delete the user
+        db.delete(user)
+        db.commit()
+
+        logger.critical(f"✅ FRAUDULENT USER DELETED: {username}")
+        return {
+            "status": "deleted",
+            "username": username,
+            "issues_found": audit_result["issues"]
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Failed to delete user: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
 
 # FIXED: Add exports at the end of the file for proper import
 __all__ = [

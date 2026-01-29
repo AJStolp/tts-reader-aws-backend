@@ -701,8 +701,73 @@ class StripeService:
             logger.error(f"❌ Credit checkout error for user {username}: {str(e)}")
             raise
 
+    def _verify_stripe_customer_exists(self, customer_id: str) -> bool:
+        """Verify that a Stripe customer ID actually exists in Stripe.
+
+        SECURITY: Prevents fake/fabricated customer IDs from being stored.
+        """
+        try:
+            customer = stripe.Customer.retrieve(customer_id)
+            # Check if customer exists and is not deleted
+            if customer and not getattr(customer, 'deleted', False):
+                logger.info(f"✅ Verified Stripe customer exists: {customer_id}")
+                return True
+            logger.warning(f"⚠️ Stripe customer not found or deleted: {customer_id}")
+            return False
+        except stripe.error.InvalidRequestError as e:
+            logger.error(f"❌ Invalid Stripe customer ID: {customer_id} - {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error verifying Stripe customer: {customer_id} - {str(e)}")
+            return False
+
+    def _verify_payment_succeeded(self, payment_intent_id: str) -> bool:
+        """Verify that a payment intent actually succeeded in Stripe.
+
+        SECURITY: Prevents crediting accounts without actual payment.
+        """
+        if not payment_intent_id:
+            logger.warning("⚠️ No payment intent ID provided for verification")
+            return False
+
+        try:
+            payment_intent = stripe.PaymentIntent.retrieve(payment_intent_id)
+            if payment_intent.status == "succeeded":
+                logger.info(f"✅ Verified payment succeeded: {payment_intent_id}")
+                return True
+            logger.warning(f"⚠️ Payment not succeeded. Status: {payment_intent.status} for {payment_intent_id}")
+            return False
+        except stripe.error.InvalidRequestError as e:
+            logger.error(f"❌ Invalid payment intent ID: {payment_intent_id} - {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error verifying payment: {payment_intent_id} - {str(e)}")
+            return False
+
+    def _verify_checkout_session(self, session_id: str) -> dict:
+        """Verify checkout session exists and get payment details from Stripe.
+
+        SECURITY: Double-check session data directly from Stripe API.
+        """
+        try:
+            session = stripe.checkout.Session.retrieve(session_id)
+            return {
+                "valid": True,
+                "payment_status": session.payment_status,
+                "amount_total": session.amount_total,
+                "customer": session.customer,
+                "payment_intent": session.payment_intent,
+                "metadata": session.metadata
+            }
+        except stripe.error.InvalidRequestError as e:
+            logger.error(f"❌ Invalid checkout session ID: {session_id} - {str(e)}")
+            return {"valid": False}
+        except Exception as e:
+            logger.error(f"❌ Error verifying checkout session: {session_id} - {str(e)}")
+            return {"valid": False}
+
     def handle_webhook_event(self, payload: bytes, signature: str, db: Session) -> Dict[str, str]:
-        """Handle Stripe webhook events with tier management"""
+        """Handle Stripe webhook events with tier management and SECURITY VERIFICATION"""
         try:
             event = stripe.Webhook.construct_event(
                 payload, signature, self.webhook_secret
@@ -716,15 +781,31 @@ class StripeService:
 
         if event["type"] == "checkout.session.completed":
             session = event["data"]["object"]
+            session_id = session.get("id")
+
+            # SECURITY: Verify the checkout session directly with Stripe API
+            verified_session = self._verify_checkout_session(session_id)
+            if not verified_session.get("valid"):
+                logger.error(f"❌ SECURITY: Failed to verify checkout session {session_id}")
+                raise ValueError("Failed to verify checkout session with Stripe")
+
+            if verified_session.get("payment_status") != "paid":
+                logger.error(f"❌ SECURITY: Payment not completed for session {session_id}. Status: {verified_session.get('payment_status')}")
+                raise ValueError("Payment not completed")
+
             username = session.get("client_reference_id") or session.get("metadata", {}).get("username")
             user = db.query(User).filter(User.username == username).first()
 
             if user:
-                # Store Stripe customer ID if not already stored
+                # SECURITY: Verify customer ID exists in Stripe before storing
                 customer_id = session.get("customer")
                 if customer_id and not user.stripe_customer_id:
-                    user.stripe_customer_id = customer_id
-                    logger.info(f"✅ Stored Stripe customer ID for user {username}")
+                    if self._verify_stripe_customer_exists(customer_id):
+                        user.stripe_customer_id = customer_id
+                        logger.info(f"✅ Stored verified Stripe customer ID for user {username}")
+                    else:
+                        logger.error(f"❌ SECURITY: Rejected fake customer ID {customer_id} for user {username}")
+                        # Don't store fake customer IDs
 
                 metadata = session.get("metadata", {})
                 purchase_type = metadata.get("purchase_type", "subscription")
@@ -739,7 +820,17 @@ class StripeService:
                     # Get payment details from session
                     amount_total = session.get("amount_total", 0)  # in cents
                     payment_intent_id = session.get("payment_intent")  # Stripe payment intent ID
-                    session_id = session.get("id")  # Stripe session ID
+
+                    # SECURITY: Verify payment actually succeeded before crediting
+                    if not self._verify_payment_succeeded(payment_intent_id):
+                        logger.error(f"❌ SECURITY: Rejected credit allocation - payment not verified for user {username}")
+                        raise ValueError("Payment verification failed - credits not allocated")
+
+                    # SECURITY: Verify credit amount matches expected price ($0.012/credit)
+                    expected_price = int(credits * 0.012 * 100)  # Convert to cents
+                    if amount_total < expected_price * 0.95:  # Allow 5% tolerance for rounding
+                        logger.error(f"❌ SECURITY: Price mismatch! Expected ~${expected_price/100:.2f}, got ${amount_total/100:.2f} for {credits} credits")
+                        raise ValueError("Price verification failed - credits not allocated")
 
                     # Create credit transaction with 1-year expiration
                     # This automatically calculates tier based on total active credits
@@ -749,6 +840,8 @@ class StripeService:
                         stripe_payment_id=payment_intent_id,
                         stripe_session_id=session_id
                     )
+
+                    logger.info(f"✅ VERIFIED credit purchase: {credits} credits for ${amount_total/100:.2f} - user {username}")
 
                     db.commit()
                     logger.info(f"✅ Created credit transaction for user {username}: {credits} credits, expires {transaction.expires_at.date()}, new tier: {user.tier.value}")
@@ -781,6 +874,18 @@ class StripeService:
                     subscription_id = session.get("subscription")
                     tier = metadata.get("tier", "free")
                     price_id = metadata.get("price_id", "")
+
+                    # SECURITY: Verify subscription exists in Stripe
+                    if subscription_id:
+                        try:
+                            subscription = stripe.Subscription.retrieve(subscription_id)
+                            if subscription.status not in ["active", "trialing"]:
+                                logger.error(f"❌ SECURITY: Subscription {subscription_id} not active. Status: {subscription.status}")
+                                raise ValueError("Subscription verification failed")
+                            logger.info(f"✅ Verified subscription {subscription_id} is active")
+                        except stripe.error.InvalidRequestError as e:
+                            logger.error(f"❌ SECURITY: Invalid subscription ID {subscription_id} - {str(e)}")
+                            raise ValueError("Subscription verification failed")
 
                     # Update user subscription and tier
                     user.stripe_subscription_id = subscription_id
@@ -857,6 +962,124 @@ class StripeService:
         except stripe.error.StripeError as e:
             logger.error(f"❌ Error creating billing portal session: {str(e)}")
             raise ValueError(f"Failed to create billing portal session: {str(e)}")
+
+    def audit_user_stripe_data(self, user: 'User') -> Dict[str, Any]:
+        """
+        SECURITY AUDIT: Verify a user's Stripe data against actual Stripe records.
+
+        Returns audit results showing any discrepancies that may indicate fraud.
+        """
+        results = {
+            "user_id": str(user.user_id),
+            "username": user.username,
+            "issues": [],
+            "verified": True
+        }
+
+        # Check Stripe customer ID
+        if user.stripe_customer_id:
+            if not self._verify_stripe_customer_exists(user.stripe_customer_id):
+                results["issues"].append({
+                    "type": "FAKE_CUSTOMER_ID",
+                    "severity": "CRITICAL",
+                    "field": "stripe_customer_id",
+                    "value": user.stripe_customer_id,
+                    "message": "Stripe customer ID does not exist in Stripe"
+                })
+                results["verified"] = False
+
+        # Check Stripe subscription ID
+        if user.stripe_subscription_id:
+            try:
+                subscription = stripe.Subscription.retrieve(user.stripe_subscription_id)
+                if subscription.status not in ["active", "trialing", "past_due"]:
+                    results["issues"].append({
+                        "type": "INVALID_SUBSCRIPTION_STATUS",
+                        "severity": "HIGH",
+                        "field": "stripe_subscription_id",
+                        "value": user.stripe_subscription_id,
+                        "status": subscription.status,
+                        "message": f"Subscription status is {subscription.status}"
+                    })
+            except stripe.error.InvalidRequestError:
+                results["issues"].append({
+                    "type": "FAKE_SUBSCRIPTION_ID",
+                    "severity": "CRITICAL",
+                    "field": "stripe_subscription_id",
+                    "value": user.stripe_subscription_id,
+                    "message": "Stripe subscription ID does not exist"
+                })
+                results["verified"] = False
+
+        # Check credit transactions for unverified payments
+        for txn in user.credit_transactions:
+            if txn.stripe_payment_id:
+                if not self._verify_payment_succeeded(txn.stripe_payment_id):
+                    results["issues"].append({
+                        "type": "UNVERIFIED_PAYMENT",
+                        "severity": "CRITICAL",
+                        "transaction_id": txn.id,
+                        "credits": txn.credits_purchased,
+                        "stripe_payment_id": txn.stripe_payment_id,
+                        "message": "Payment could not be verified in Stripe"
+                    })
+                    results["verified"] = False
+            elif txn.credits_purchased > 0 and not txn.stripe_session_id:
+                # Credits added without any Stripe reference - SUSPICIOUS
+                results["issues"].append({
+                    "type": "CREDITS_WITHOUT_PAYMENT",
+                    "severity": "CRITICAL",
+                    "transaction_id": txn.id,
+                    "credits": txn.credits_purchased,
+                    "message": "Credits allocated without Stripe payment reference"
+                })
+                results["verified"] = False
+
+        # Check for suspicious credit balance
+        if user.credit_balance > 10000 and not user.stripe_customer_id:
+            results["issues"].append({
+                "type": "HIGH_BALANCE_NO_CUSTOMER",
+                "severity": "HIGH",
+                "credit_balance": user.credit_balance,
+                "message": "High credit balance with no Stripe customer ID"
+            })
+            results["verified"] = False
+
+        return results
+
+    def audit_all_users(self, db: Session) -> Dict[str, Any]:
+        """
+        SECURITY AUDIT: Scan all users for fraudulent Stripe data.
+
+        Returns list of users with issues and summary statistics.
+        """
+        users_with_issues = []
+        total_users = 0
+        users_with_stripe_data = 0
+
+        all_users = db.query(User).filter(
+            (User.stripe_customer_id.isnot(None)) |
+            (User.stripe_subscription_id.isnot(None)) |
+            (User.credit_balance > 0)
+        ).all()
+
+        for user in all_users:
+            total_users += 1
+            if user.stripe_customer_id or user.stripe_subscription_id:
+                users_with_stripe_data += 1
+
+            audit_result = self.audit_user_stripe_data(user)
+            if audit_result["issues"]:
+                users_with_issues.append(audit_result)
+
+        return {
+            "audit_timestamp": datetime.utcnow().isoformat(),
+            "total_users_scanned": total_users,
+            "users_with_stripe_data": users_with_stripe_data,
+            "users_with_issues": len(users_with_issues),
+            "flagged_users": users_with_issues
+        }
+
 
 class AnalyticsService:
     """Service for analytics and reporting"""
