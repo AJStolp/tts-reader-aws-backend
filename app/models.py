@@ -11,8 +11,8 @@ class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
     password: str = Field(..., min_length=6, max_length=128)
     email: EmailStr
-    first_name: str = Field(..., min_length=1, max_length=128)
-    last_name: str = Field(..., min_length=1, max_length=128)
+    first_name: Optional[str] = Field(default=None, max_length=128)
+    last_name: Optional[str] = Field(default=None, max_length=128)
 
 class UserLogin(BaseModel):
     """Model for user login"""
