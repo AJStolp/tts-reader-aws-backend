@@ -298,8 +298,8 @@ def create_user_account(user_data: dict, db: Session) -> User:
         db_user = User(
             username=user_data["username"],
             email=user_data["email"],
-            first_name=user_data["first_name"],
-            last_name=user_data["last_name"]
+            first_name=user_data.get("first_name"),
+            last_name=user_data.get("last_name")
         )
 
         # Set password using the model method
