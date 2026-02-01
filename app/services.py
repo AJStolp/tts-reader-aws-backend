@@ -682,6 +682,7 @@ class StripeService:
                     }
                 ],
                 mode="payment",  # One-time payment
+                customer_creation="always",  # Always create a Stripe customer for billing portal access
                 success_url=f"{config.FRONTEND_URL.rstrip('/')}/pages/success.html?session_id={{CHECKOUT_SESSION_ID}}",
                 cancel_url=f"{config.FRONTEND_URL.rstrip('/')}/pricing",
                 client_reference_id=username,
