@@ -38,7 +38,7 @@ print_usage() {
     echo -e "${GREEN}Examples:${NC}"
     echo "  ./run_e2e_tests.sh --local"
     echo "  ./run_e2e_tests.sh --aws"
-    echo "  ./run_e2e_tests.sh --url https://api.ttsaudify.com"
+    echo "  ./run_e2e_tests.sh --url https://api.unchonk.com"
     echo ""
 }
 

@@ -149,7 +149,7 @@ locust --config=locust.conf
 ### Production Backend Testing
 ```bash
 # Update locust.conf:
-# host = https://api.ttsaudify.com  # Your production URL
+# host = https://api.unchonk.com  # Your production URL
 
 # Run test (be careful with production!)
 locust --headless --users 50 --spawn-rate 5 --run-time 5m --config=locust.conf

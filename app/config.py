@@ -49,10 +49,10 @@ class EnterpriseConfig(BaseSettings):
         "http://127.0.0.1:3001",
         "http://localhost:8080",
         "http://127.0.0.1:8080",
-        "https://ttsaudify.com",
-        "https://www.ttsaudify.com",
-        "https://api.ttsaudify.com",
-        "http://api.ttsaudify.com",
+        "https://unchonk.com",
+        "https://www.unchonk.com",
+        "https://api.unchonk.com",
+        "http://api.unchonk.com",
         "*"  # Allow all origins for now (can restrict later)
     ]
     

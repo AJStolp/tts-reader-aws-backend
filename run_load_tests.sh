@@ -74,7 +74,7 @@ for arg in "$@"; do
             shift
             ;;
         --prod)
-            HOST="https://api.ttsaudify.com"  # UPDATE THIS with your production URL
+            HOST="https://api.unchonk.com"  # UPDATE THIS with your production URL
             shift
             ;;
     esac
