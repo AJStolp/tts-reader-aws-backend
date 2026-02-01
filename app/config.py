@@ -439,6 +439,20 @@ class TierConfig:
             },
             "stripe_price_ids": {}
         },
+        "light": {
+            "name": "Light",
+            "price_monthly": 6.00,  # Starting price for 500 credits
+            "price_yearly": 0,  # One-time purchase only
+            "monthly_cap": 500_000,  # 500 credits = 500k characters
+            "features": {
+                "web_speech_api": True,
+                "aws_polly_standard": True,  # Light tier gets Polly standard
+                "aws_polly_neural": False,
+                "speech_marks": True,
+                "priority_support": False
+            },
+            "stripe_price_ids": {}  # Dynamic pricing via credit checkout
+        },
         "premium": {
             "name": "Premium",
             "price_monthly": 14.00,

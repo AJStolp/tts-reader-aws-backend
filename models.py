@@ -21,6 +21,7 @@ pwd_context = CryptContext(
 # Tier enumeration
 class UserTier(enum.Enum):
     FREE = "FREE"
+    LIGHT = "LIGHT"
     PREMIUM = "PREMIUM"
     PRO = "PRO"
 
@@ -328,7 +329,8 @@ class User(Base):
         Tier thresholds:
         - PRO: 10,000+ credits
         - PREMIUM: 2,000+ credits
-        - FREE: < 2,000 credits
+        - LIGHT: 500+ credits
+        - FREE: < 500 credits
         """
         total_credits = self.calculate_total_active_credits()
 
@@ -336,6 +338,8 @@ class User(Base):
             self.tier = UserTier.PRO
         elif total_credits >= 2000:
             self.tier = UserTier.PREMIUM
+        elif total_credits >= 500:
+            self.tier = UserTier.LIGHT
         else:
             self.tier = UserTier.FREE
 
@@ -367,10 +371,13 @@ class User(Base):
             raise ValueError("Credit amount cannot be negative")
 
         # Determine tier at purchase based on credit amount
+        # Thresholds: PRO >= 10000, PREMIUM >= 2000, LIGHT >= 500, FREE < 500
         if credit_amount >= 10000:
             tier_at_purchase = UserTier.PRO
         elif credit_amount >= 2000:
             tier_at_purchase = UserTier.PREMIUM
+        elif credit_amount >= 500:
+            tier_at_purchase = UserTier.LIGHT
         else:
             tier_at_purchase = UserTier.FREE
 
@@ -523,6 +530,7 @@ class User(Base):
         """
         tier_caps = {
             UserTier.FREE: 0,  # Unlimited but only web speech API
+            UserTier.LIGHT: 500_000,  # 500k characters (500 credits)
             UserTier.PREMIUM: 2_000_000,  # 2M characters
             UserTier.PRO: 10_000_000  # 10M characters
         }
