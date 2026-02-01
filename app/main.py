@@ -238,12 +238,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         # Add enterprise security documentation
         contact={
-            "name": "TTS DeepSight Enterprise Security",
-            "email": "security@ttsaudify.com"
+            "name": "unChonk Enterprise Security",
+            "email": "security@unchonk.com"
         },
         license_info={
             "name": "Enterprise License",
-            "url": "https://ttsaudify.com/enterprise-license"
+            "url": "https://unchonk.com/enterprise-license"
         }
     )
     

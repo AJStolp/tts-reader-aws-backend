@@ -62,7 +62,7 @@ def send_expiration_warning_email(user: User, days_remaining: int, credits: int,
     """
     try:
         resend.emails.send({
-            "from": "TTS Reader <noreply@ttsaudify.com>",
+            "from": "TTS Reader <noreply@unchonk.com>",
             "to": user.email,
             "subject": f"⚠️ Your credits expire in {days_remaining} days",
             "html": f'''
@@ -71,7 +71,7 @@ def send_expiration_warning_email(user: User, days_remaining: int, credits: int,
                 <p>You have <strong>{credits:,} credits</strong> that will expire in <strong>{days_remaining} days</strong>.</p>
                 <p>Expiration Date: <strong>{expires_at.strftime("%B %d, %Y")}</strong></p>
                 <p>Use your credits before they expire to get the most out of your purchase!</p>
-                <p>Login to your account to start using your credits: <a href="https://ttsaudify.com/login">TTS Reader</a></p>
+                <p>Login to your account to start using your credits: <a href="https://unchonk.com/login">TTS Reader</a></p>
                 <br>
                 <p>Thanks,<br>TTS Reader Team</p>
             '''
@@ -97,7 +97,7 @@ def send_expiration_notification_email(user: User, credits_expired: int):
     """
     try:
         resend.emails.send({
-            "from": "TTS Reader <noreply@ttsaudify.com>",
+            "from": "TTS Reader <noreply@unchonk.com>",
             "to": user.email,
             "subject": "Your TTS credits have expired",
             "html": f'''
@@ -105,7 +105,7 @@ def send_expiration_notification_email(user: User, credits_expired: int):
                 <p>Hi {user.username},</p>
                 <p><strong>{credits_expired:,} credits</strong> have expired from your account.</p>
                 <p>These credits were purchased more than one year ago and are no longer available.</p>
-                <p>Purchase new credits to continue using TTS Reader: <a href="https://ttsaudify.com/pricing">View Pricing</a></p>
+                <p>Purchase new credits to continue using TTS Reader: <a href="https://unchonk.com/pricing">View Pricing</a></p>
                 <br>
                 <p>Thanks,<br>TTS Reader Team</p>
             '''

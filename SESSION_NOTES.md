@@ -42,7 +42,7 @@ Note: `requirements.txt` already has `bcrypt==4.0.1` pinned - server just had wr
 
 **Investigation Status:**
 - Backend code is CORRECT - uses `stripe.checkout.Session.create()` (see `app/services.py` line 669)
-- Webhook endpoint created at: `https://api.ttsaudify.com/api/stripe_webhook`
+- Webhook endpoint created at: `https://api.unchonk.com/api/stripe_webhook`
 - Webhook handler expects `checkout.session.completed` event (see `app/services.py` line 782)
 
 **Next Steps:**
