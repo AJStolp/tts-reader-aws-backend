@@ -42,7 +42,7 @@ class DittofeedService:
 
     def _headers(self) -> Dict[str, str]:
         return {
-            "Authorization": f"Bearer {self._write_key}",
+            "Authorization": self._write_key,  # Key already includes auth type prefix (e.g., "Basic ...")
             "Content-Type": "application/json",
         }
 
