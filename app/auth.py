@@ -156,8 +156,8 @@ class AuthManager:
 
             # Create message
             msg = MIMEMultipart('alternative')
-            msg['Subject'] = "Verify your TTS Reader account"
-            msg['From'] = "tts@logantaylorandkitties.com"
+            msg['Subject'] = "Verify your unChonk account"
+            msg['From'] = "noreply@unchonk.com"
             msg['To'] = user.email
             print(f"DEBUG: Message created for {user.email}")
 
@@ -165,36 +165,36 @@ class AuthManager:
             html_content = f"""
             <html>
                 <body>
-                    <h2>Welcome to TTS Reader!</h2>
+                    <h2>Welcome to unChonk!</h2>
                     <p>Hi {user.first_name or user.username},</p>
-                    <p>Thank you for signing up for TTS Reader. To complete your registration, please verify your email address by clicking the link below:</p>
+                    <p>Thank you for signing up for unChonk. To complete your registration, please verify your email address by clicking the link below:</p>
                     <p><a href="{verification_url}" style="background-color: #4CAF50; color: white; padding: 14px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">Verify Email Address</a></p>
                     <p>If the button doesn't work, you can copy and paste this link into your browser:</p>
                     <p>{verification_url}</p>
                     <p>This verification link will expire in 24 hours.</p>
-                    <p>If you didn't create an account with TTS Reader, you can safely ignore this email.</p>
+                    <p>If you didn't create an account with unChonk, you can safely ignore this email.</p>
                     <br>
-                    <p>Best regards,<br>The TTS Reader Team</p>
+                    <p>Best regards,<br>The unChonk Team</p>
                 </body>
             </html>
             """
 
             # Create text content
             text_content = f"""
-            Welcome to TTS Reader!
+            Welcome to unChonk!
 
             Hi {user.first_name or user.username},
 
-            Thank you for signing up for TTS Reader. To complete your registration, please verify your email address by visiting this link:
+            Thank you for signing up for unChonk. To complete your registration, please verify your email address by visiting this link:
 
             {verification_url}
 
             This verification link will expire in 24 hours.
 
-            If you didn't create an account with TTS Reader, you can safely ignore this email.
+            If you didn't create an account with unChonk, you can safely ignore this email.
 
             Best regards,
-            The TTS Reader Team
+            The unChonk Team
             """
 
             # Attach parts
