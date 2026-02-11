@@ -1022,7 +1022,7 @@ async def create_billing_portal_session(
     """
     try:
         # Import config to get FRONTEND_URL
-        from config import EnterpriseConfig
+        from app.config import EnterpriseConfig
         settings = EnterpriseConfig()
 
         # Create return URL to usage page
