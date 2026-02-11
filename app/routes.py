@@ -1021,12 +1021,12 @@ async def create_billing_portal_session(
         HTTPException: 400 if user has no billing history, 500 if portal creation fails
     """
     try:
-        # Import config to get WEBAPP_URL
-        from config import Settings
-        settings = Settings()
+        # Import config to get FRONTEND_URL
+        from config import EnterpriseConfig
+        settings = EnterpriseConfig()
 
         # Create return URL to usage page
-        return_url = f"{settings.WEBAPP_URL}/usage.html"
+        return_url = f"{settings.FRONTEND_URL}/usage.html"
 
         # Create billing portal session
         portal_url = await stripe_service.create_billing_portal_session(
