@@ -98,15 +98,12 @@ async def login(request: Request, user_data: UserLogin, db: Session = Depends(ge
         logger.error(f"Error parsing user_data: {e}")
         raise HTTPException(status_code=422, detail=f"Invalid request data: {str(e)}")
 
-    # Authenticate user - temporarily disable email verification
+    # Authenticate user (allow unverified — dashboard shows nag banner, purchase endpoints gate separately)
     db_user = auth_manager.authenticate_user(db, user_data.username, user_data.password, require_email_verification=False)
-    
+
     if not db_user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    print(f"{db_user.email_verified=}")
-    # TEMPORARILY DISABLED - Email verification check
-    # if not db_user.email_verified:
-    #     raise HTTPException(status_code=401, detail="Email isn't verified")
+
     # Update last login
     db_user.update_last_login()
     db.commit()
