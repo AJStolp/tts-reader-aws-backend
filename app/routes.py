@@ -67,6 +67,19 @@ admin_router = APIRouter(prefix="/api/admin", tags=["Administration"])
 training_router = APIRouter(prefix="/api", tags=["Training Interface"])
 analytics_router = APIRouter(prefix="/api", tags=["Analytics"])
 
+
+async def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Gate admin routes to users whose email is in ADMIN_EMAILS env var."""
+    from app.config import config
+    allowed = [e.strip().lower() for e in config.ADMIN_EMAILS.split(",") if e.strip()]
+    if not allowed:
+        logger.error("ADMIN_EMAILS env var is empty — all admin access denied")
+        raise HTTPException(status_code=403, detail="Admin access not configured")
+    if (current_user.email or "").lower() not in allowed:
+        logger.warning(f"Non-admin user attempted admin access: {current_user.username} ({current_user.email})")
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
 # Authentication endpoints (EXISTING - ENHANCED)
 @auth_router.post("/register", response_model=UserResponse)
 async def register(request: Request, user_data: UserCreateWithAttribution, db: Session = Depends(get_db)):
@@ -2129,7 +2142,7 @@ async def auto_learn_from_usage(request: dict):
 
 @admin_router.get("/security-audit")
 async def run_security_audit(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """
@@ -2158,7 +2171,7 @@ async def run_security_audit(
 @admin_router.get("/audit-user/{username}")
 async def audit_single_user(
     username: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """
@@ -2180,7 +2193,7 @@ async def audit_single_user(
 @admin_router.delete("/purge-fraudulent-user/{username}")
 async def purge_fraudulent_user(
     username: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """
@@ -2265,14 +2278,14 @@ async def get_user_analytics(
 
 @admin_router.get("/analytics/overview", response_model=AdminAnalyticsOverview)
 async def get_admin_analytics_overview(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: Session = Depends(get_db)
 ):
     """ADMIN: Aggregate analytics dashboard."""
-    # TODO: Add proper admin role check in production
-    logger.warning(f"Admin analytics accessed by: {current_user.username}")
+    logger.info(f"Admin analytics accessed by: {current_user.username}")
 
     from sqlalchemy import func
+    from models import CreditTransaction
 
     thirty_days_ago = datetime.utcnow() - timedelta(days=30)
 
@@ -2280,14 +2293,41 @@ async def get_admin_analytics_overview(
     verified_users = db.query(func.count(User.user_id)).filter(User.email_verified == True).scalar() or 0
     paying_users = db.query(func.count(User.user_id)).filter(User.purchase_count > 0).scalar() or 0
     total_revenue = db.query(func.coalesce(func.sum(User.total_lifetime_spend), 0)).filter(User.purchase_count > 0).scalar() or 0
-    total_synth = db.query(func.coalesce(func.sum(User.total_chars_synthesized), 0)).scalar() or 0
-    total_ext = db.query(func.coalesce(func.sum(User.total_chars_extracted), 0)).scalar() or 0
     recent_signups = db.query(func.count(User.user_id)).filter(User.created_at >= thirty_days_ago).scalar() or 0
 
     recent_purchases = db.query(func.count(LifecycleEvent.id)).filter(
         LifecycleEvent.event_name.in_([LifecycleEventName.FIRST_PURCHASE, LifecycleEventName.SECOND_PURCHASE]),
         LifecycleEvent.created_at >= thirty_days_ago
     ).scalar() or 0
+
+    # Avg revenue per paying user
+    avg_rev = total_revenue // paying_users if paying_users > 0 else 0
+
+    # Credit utilization: (purchased - remaining) / purchased
+    total_purchased = db.query(func.coalesce(func.sum(CreditTransaction.credits_purchased), 0)).scalar() or 0
+    total_remaining = db.query(func.coalesce(func.sum(CreditTransaction.credits_remaining), 0)).scalar() or 0
+    credit_util = ((total_purchased - total_remaining) / total_purchased * 100) if total_purchased > 0 else 0.0
+
+    # Repeat purchase rate: users with 2+ purchases / users with 1+ purchases
+    repeat_buyers = db.query(func.count(User.user_id)).filter(User.purchase_count >= 2).scalar() or 0
+    repeat_rate = (repeat_buyers / paying_users * 100) if paying_users > 0 else 0.0
+
+    # Monthly revenue (last 12 months)
+    from sqlalchemy import extract
+    twelve_months_ago = datetime.utcnow() - timedelta(days=365)
+    monthly_rows = db.query(
+        extract('year', CreditTransaction.purchased_at).label('yr'),
+        extract('month', CreditTransaction.purchased_at).label('mo'),
+        func.coalesce(func.sum(CreditTransaction.purchase_price), 0),
+    ).filter(
+        CreditTransaction.purchased_at >= twelve_months_ago,
+        CreditTransaction.purchase_price.isnot(None),
+    ).group_by('yr', 'mo').order_by('yr', 'mo').all()
+
+    monthly_revenue = [
+        {"month": f"{int(yr)}-{int(mo):02d}", "revenue_cents": int(rev)}
+        for yr, mo, rev in monthly_rows
+    ]
 
     # Top UTM sources
     utm_rows = db.query(
@@ -2296,16 +2336,35 @@ async def get_admin_analytics_overview(
         func.count(User.user_id).desc()
     ).limit(10).all()
 
+    # Top extraction domains
+    domain_rows = db.query(
+        UsageEvent.source_domain, func.count(UsageEvent.id)
+    ).filter(
+        UsageEvent.event_type == UsageEventType.EXTRACT,
+        UsageEvent.source_domain.isnot(None),
+        UsageEvent.source_domain != '',
+    ).group_by(UsageEvent.source_domain).order_by(
+        func.count(UsageEvent.id).desc()
+    ).limit(10).all()
+
+    total_extractions = sum(c for _, c in domain_rows) if domain_rows else 0
+
     return AdminAnalyticsOverview(
         total_users=total_users,
         verified_users=verified_users,
         paying_users=paying_users,
         total_revenue_cents=total_revenue,
-        total_chars_synthesized=total_synth,
-        total_chars_extracted=total_ext,
+        avg_revenue_per_user_cents=avg_rev,
+        credit_utilization_pct=round(credit_util, 1),
+        repeat_purchase_rate_pct=round(repeat_rate, 1),
         signups_last_30_days=recent_signups,
         purchases_last_30_days=recent_purchases,
+        monthly_revenue=monthly_revenue,
         top_utm_sources=[{"source": s, "count": c} for s, c in utm_rows],
+        top_extraction_domains=[
+            {"domain": d, "count": c, "pct": round(c / total_extractions * 100, 1) if total_extractions else 0}
+            for d, c in domain_rows
+        ],
     )
 
 
