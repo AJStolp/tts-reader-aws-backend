@@ -172,3 +172,49 @@ class ErrorResponse(BaseModel):
     detail: str
     error_code: Optional[str] = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+# Analytics / Marketing schemas
+class UserCreateWithAttribution(BaseModel):
+    """Registration model with UTM / attribution fields for marketing tracking."""
+    username: str = Field(..., min_length=3, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
+    password: str = Field(..., min_length=6, max_length=128)
+    email: EmailStr
+    first_name: Optional[str] = Field(default=None, max_length=128)
+    last_name: Optional[str] = Field(default=None, max_length=128)
+    signup_source: Optional[str] = Field(default=None, max_length=128)
+    utm_source: Optional[str] = Field(default=None, max_length=128)
+    utm_medium: Optional[str] = Field(default=None, max_length=128)
+    utm_campaign: Optional[str] = Field(default=None, max_length=128)
+    referred_by: Optional[str] = Field(default=None, description="Username of referring user")
+
+class PlatformStatsResponse(BaseModel):
+    """Public marketing endpoint response — powers landing page stats."""
+    total_characters_synthesized: int = 0
+    total_characters_extracted: int = 0
+    total_extractions: int = 0
+    total_syntheses: int = 0
+    total_users: int = 0
+    total_listening_hours: float = 0.0
+
+class UserAnalyticsResponse(BaseModel):
+    """Authenticated user's own analytics summary."""
+    total_chars_synthesized: int = 0
+    total_chars_extracted: int = 0
+    total_usage_events: int = 0
+    total_lifetime_spend: int = 0
+    purchase_count: int = 0
+    member_since: Optional[datetime] = None
+    last_active_at: Optional[datetime] = None
+    tier: str = "free"
+
+class AdminAnalyticsOverview(BaseModel):
+    """Admin dashboard aggregate analytics."""
+    total_users: int = 0
+    verified_users: int = 0
+    paying_users: int = 0
+    total_revenue_cents: int = 0
+    total_chars_synthesized: int = 0
+    total_chars_extracted: int = 0
+    signups_last_30_days: int = 0
+    purchases_last_30_days: int = 0
+    top_utm_sources: List[Dict[str, Any]] = Field(default_factory=list)
