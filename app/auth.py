@@ -16,8 +16,9 @@ from sqlalchemy.orm import Session
 
 from .config import config
 from .dittofeed import dittofeed_service, fire_and_forget
+from .analytics import record_lifecycle_event, increment_platform_stat
 from database import get_db
-from models import User
+from models import User, LifecycleEventName
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +300,11 @@ def create_user_account(user_data: dict, db: Session) -> User:
             username=user_data["username"],
             email=user_data["email"],
             first_name=user_data.get("first_name"),
-            last_name=user_data.get("last_name")
+            last_name=user_data.get("last_name"),
+            signup_source=user_data.get("signup_source"),
+            utm_source=user_data.get("utm_source"),
+            utm_medium=user_data.get("utm_medium"),
+            utm_campaign=user_data.get("utm_campaign"),
         )
 
         # Set password using the model method
@@ -336,6 +341,14 @@ def create_user_account(user_data: dict, db: Session) -> User:
                 "lastName": db_user.last_name,
             }
         ))
+
+        # Record registration analytics
+        try:
+            record_lifecycle_event(db, db_user, LifecycleEventName.REGISTERED)
+            increment_platform_stat(db, "total_users", 1)
+            db.commit()
+        except Exception as analytics_err:
+            logger.warning(f"Registration analytics failed (non-fatal): {analytics_err}")
 
         # Send verification email
         print(f"email about to be sent")
@@ -379,6 +392,13 @@ def verify_user_email(token: str, db: Session) -> dict:
         # Mark email as verified
         user.mark_email_verified()
         db.commit()
+
+        # Record email verified lifecycle event
+        try:
+            record_lifecycle_event(db, user, LifecycleEventName.EMAIL_VERIFIED)
+            db.commit()
+        except Exception as analytics_err:
+            logger.warning(f"Email verification analytics failed (non-fatal): {analytics_err}")
 
         # Update Dittofeed profile and track verification
         fire_and_forget(dittofeed_service.identify(

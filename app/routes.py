@@ -16,12 +16,15 @@ from .auth import auth_manager, get_current_user, validate_user_registration, cr
 from .models import (
     UserCreate, UserLogin, UserResponse, Token, ExtractRequest, ExtractRequestEnhanced,
     ExtractResponse, ExtractResponseEnhanced, SynthesizeRequest, SynthesizeResponse,
-    PreferencesUpdate, StripeCheckoutRequest, CreditCheckoutRequest, ExtractionPreview
+    PreferencesUpdate, StripeCheckoutRequest, CreditCheckoutRequest, ExtractionPreview,
+    UserCreateWithAttribution, PlatformStatsResponse, UserAnalyticsResponse, AdminAnalyticsOverview
 )
 from .services import (
     aws_service, extraction_service, tts_service, stripe_service, analytics_service
 )
 from .dittofeed import dittofeed_service, fire_and_forget
+from .analytics import record_usage_event, get_platform_stats
+from models import UsageEventType, UsageEvent, LifecycleEvent, LifecycleEventName
 
 # FIXED: Import the enhanced extraction service properly with better error handling
 try:
@@ -62,10 +65,11 @@ user_router = APIRouter(prefix="/api", tags=["User Management"])
 payment_router = APIRouter(prefix="/api", tags=["Payments"])
 admin_router = APIRouter(prefix="/api/admin", tags=["Administration"])
 training_router = APIRouter(prefix="/api", tags=["Training Interface"])
+analytics_router = APIRouter(prefix="/api", tags=["Analytics"])
 
 # Authentication endpoints (EXISTING - ENHANCED)
 @auth_router.post("/register", response_model=UserResponse)
-async def register(request: Request, user_data: UserCreate, db: Session = Depends(get_db)):
+async def register(request: Request, user_data: UserCreateWithAttribution, db: Session = Depends(get_db)):
     """Register a new user with enhanced validation"""
     logger.info(f"Registration attempt for username: {user_data.username}")
 
@@ -405,16 +409,26 @@ async def extract_content_basic(
             )
         
         db.commit()
-        
+
+        # Record analytics
+        try:
+            record_usage_event(
+                db=db, user=current_user, event_type=UsageEventType.EXTRACT,
+                char_count=text_length, source_url=request.url, extraction_method=method,
+            )
+            db.commit()
+        except Exception as analytics_err:
+            logger.warning(f"Analytics recording failed (non-fatal): {analytics_err}")
+
         logger.info(f"Extracted {text_length} characters for user {current_user.username} using {method}")
-        
+
         return ExtractResponse(
             text=extracted_text,
             characters_used=text_length,
             remaining_chars=current_user.remaining_chars,
             extraction_method=method
         )
-        
+
     except Exception as e:
         logger.error(f"Extraction error for user {current_user.username}: {str(e)}")
         db.rollback()
@@ -449,7 +463,17 @@ async def extract_content_enhanced(
                 )
             
             db.commit()
-            
+
+            # Record analytics
+            try:
+                record_usage_event(
+                    db=db, user=current_user, event_type=UsageEventType.EXTRACT,
+                    char_count=text_length, source_url=request.url, extraction_method=method,
+                )
+                db.commit()
+            except Exception as analytics_err:
+                logger.warning(f"Analytics recording failed (non-fatal): {analytics_err}")
+
             # Return simplified structure
             return {
                 "text": extracted_text,
@@ -503,7 +527,17 @@ async def extract_content_enhanced(
                 )
             
             db.commit()
-            
+
+            # Record analytics
+            try:
+                record_usage_event(
+                    db=db, user=current_user, event_type=UsageEventType.EXTRACT,
+                    char_count=text_length, source_url=request.url, extraction_method=method,
+                )
+                db.commit()
+            except Exception as analytics_err:
+                logger.warning(f"Analytics recording failed (non-fatal): {analytics_err}")
+
             result = {
                 "text": extracted_text,
                 "characters_used": text_length,
@@ -515,7 +549,7 @@ async def extract_content_enhanced(
                 "content_source": "frontend_provided" if method == "frontend_provided" else "backend_extracted",
                 "using_provided_content": method == "frontend_provided"
             }
-            
+
             logger.debug(f"Extraction completed: {len(extracted_text)} chars, method: {method}")
             
         except Exception as extract_error:
@@ -2196,15 +2230,95 @@ async def purge_fraudulent_user(
         logger.error(f"❌ Failed to delete user: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
 
+# ============ ANALYTICS / MARKETING ENDPOINTS ============
+
+@analytics_router.get("/platform-stats", response_model=PlatformStatsResponse)
+async def get_platform_stats_endpoint(db: Session = Depends(get_db)):
+    """PUBLIC: Global platform stats for marketing landing page.
+    No auth required — powers the '200M+ characters read!' splash numbers."""
+    stats = get_platform_stats(db)
+    return PlatformStatsResponse(**stats)
+
+
+@analytics_router.get("/user/analytics", response_model=UserAnalyticsResponse)
+async def get_user_analytics(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Authenticated user's own analytics summary."""
+    from sqlalchemy import func
+    event_count = db.query(func.count(UsageEvent.id)).filter(
+        UsageEvent.user_id == current_user.user_id
+    ).scalar()
+
+    return UserAnalyticsResponse(
+        total_chars_synthesized=current_user.total_chars_synthesized or 0,
+        total_chars_extracted=current_user.total_chars_extracted or 0,
+        total_usage_events=event_count or 0,
+        total_lifetime_spend=current_user.total_lifetime_spend or 0,
+        purchase_count=current_user.purchase_count or 0,
+        member_since=current_user.created_at,
+        last_active_at=current_user.last_active_at,
+        tier=current_user.tier.value.lower() if current_user.tier else "free",
+    )
+
+
+@admin_router.get("/analytics/overview", response_model=AdminAnalyticsOverview)
+async def get_admin_analytics_overview(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """ADMIN: Aggregate analytics dashboard."""
+    # TODO: Add proper admin role check in production
+    logger.warning(f"Admin analytics accessed by: {current_user.username}")
+
+    from sqlalchemy import func
+
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+
+    total_users = db.query(func.count(User.user_id)).scalar() or 0
+    verified_users = db.query(func.count(User.user_id)).filter(User.email_verified == True).scalar() or 0
+    paying_users = db.query(func.count(User.user_id)).filter(User.purchase_count > 0).scalar() or 0
+    total_revenue = db.query(func.coalesce(func.sum(User.total_lifetime_spend), 0)).scalar() or 0
+    total_synth = db.query(func.coalesce(func.sum(User.total_chars_synthesized), 0)).scalar() or 0
+    total_ext = db.query(func.coalesce(func.sum(User.total_chars_extracted), 0)).scalar() or 0
+    recent_signups = db.query(func.count(User.user_id)).filter(User.created_at >= thirty_days_ago).scalar() or 0
+
+    recent_purchases = db.query(func.count(LifecycleEvent.id)).filter(
+        LifecycleEvent.event_name.in_([LifecycleEventName.FIRST_PURCHASE, LifecycleEventName.SECOND_PURCHASE]),
+        LifecycleEvent.created_at >= thirty_days_ago
+    ).scalar() or 0
+
+    # Top UTM sources
+    utm_rows = db.query(
+        User.utm_source, func.count(User.user_id)
+    ).filter(User.utm_source.isnot(None)).group_by(User.utm_source).order_by(
+        func.count(User.user_id).desc()
+    ).limit(10).all()
+
+    return AdminAnalyticsOverview(
+        total_users=total_users,
+        verified_users=verified_users,
+        paying_users=paying_users,
+        total_revenue_cents=total_revenue,
+        total_chars_synthesized=total_synth,
+        total_chars_extracted=total_ext,
+        signups_last_30_days=recent_signups,
+        purchases_last_30_days=recent_purchases,
+        top_utm_sources=[{"source": s, "count": c} for s, c in utm_rows],
+    )
+
+
 # FIXED: Add exports at the end of the file for proper import
 __all__ = [
     'auth_router',
-    'extraction_router', 
+    'extraction_router',
     'tts_router',
     'user_router',
     'payment_router',
     'admin_router',
     'training_router',
+    'analytics_router',
     'ENHANCED_EXTRACTION_AVAILABLE',
     'enhanced_extraction_service'
 ]

@@ -1,7 +1,7 @@
 import uuid
 import secrets
 from datetime import datetime, timedelta
-from sqlalchemy import Column, String, Integer, DateTime, Boolean, Enum, ForeignKey
+from sqlalchemy import Column, String, Integer, BigInteger, DateTime, Boolean, Enum, ForeignKey, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -30,6 +30,26 @@ class TransactionStatus(enum.Enum):
     ACTIVE = "ACTIVE"       # Credits available and not expired
     EXPIRED = "EXPIRED"     # Credits expired (1 year from purchase)
     CONSUMED = "CONSUMED"   # All credits used up
+
+# Usage event type enumeration
+class UsageEventType(enum.Enum):
+    SYNTHESIZE = "SYNTHESIZE"
+    EXTRACT = "EXTRACT"
+    PREVIEW = "PREVIEW"
+    DOWNLOAD = "DOWNLOAD"
+
+# Lifecycle event name enumeration
+class LifecycleEventName(enum.Enum):
+    REGISTERED = "REGISTERED"
+    EMAIL_VERIFIED = "EMAIL_VERIFIED"
+    FIRST_EXTRACTION = "FIRST_EXTRACTION"
+    FIRST_SYNTHESIS = "FIRST_SYNTHESIS"
+    FIRST_PURCHASE = "FIRST_PURCHASE"
+    SECOND_PURCHASE = "SECOND_PURCHASE"
+    TIER_UPGRADE = "TIER_UPGRADE"
+    TIER_DOWNGRADE = "TIER_DOWNGRADE"
+    CHURNED = "CHURNED"
+    REACTIVATED = "REACTIVATED"
 
 class CreditTransaction(Base):
     """
@@ -141,6 +161,10 @@ class User(Base):
     # Relationship to credit transactions
     credit_transactions = relationship("CreditTransaction", back_populates="user", cascade="all, delete-orphan")
 
+    # Relationships for analytics
+    usage_events = relationship("UsageEvent", back_populates="user", cascade="all, delete-orphan")
+    lifecycle_events = relationship("LifecycleEvent", back_populates="user", cascade="all, delete-orphan")
+
     # Account status and metadata
     is_active = Column(Boolean, default=True, nullable=False)
     email_verified = Column(Boolean, default=False, nullable=False)
@@ -149,6 +173,25 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_login = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Attribution / UTM tracking
+    signup_source = Column(String(128), nullable=True)
+    utm_source = Column(String(128), nullable=True)
+    utm_medium = Column(String(128), nullable=True)
+    utm_campaign = Column(String(128), nullable=True)
+    referred_by_user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id'), nullable=True)
+
+    # Revenue / LTV cached fields
+    first_purchase_at = Column(DateTime, nullable=True)
+    total_lifetime_spend = Column(Integer, default=0, nullable=False)  # in cents
+    purchase_count = Column(Integer, default=0, nullable=False)
+
+    # Activity tracking
+    last_active_at = Column(DateTime, nullable=True)
+
+    # Per-user lifetime character counters (for marketing stats)
+    total_chars_synthesized = Column(BigInteger, default=0, nullable=False)
+    total_chars_extracted = Column(BigInteger, default=0, nullable=False)
     
     def set_password(self, password: str) -> None:
         """
@@ -652,6 +695,12 @@ class User(Base):
             "usage_percentage": round(self.get_usage_percentage(), 2) if self.get_monthly_cap() > 0 else 0,
             "usage_reset_date": self.usage_reset_date.isoformat() if self.usage_reset_date else None,
             "is_near_limit": self.is_near_limit() if self.get_monthly_cap() > 0 else False,
+            # Analytics / marketing fields
+            "total_chars_synthesized": self.total_chars_synthesized or 0,
+            "total_chars_extracted": self.total_chars_extracted or 0,
+            "total_lifetime_spend": self.total_lifetime_spend or 0,
+            "purchase_count": self.purchase_count or 0,
+            "last_active_at": self.last_active_at.isoformat() if self.last_active_at else None,
             # Timestamps
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "last_login": self.last_login.isoformat() if self.last_login else None,
@@ -669,3 +718,55 @@ class User(Base):
     def __repr__(self) -> str:
         """String representation of User object"""
         return f"<User(username='{self.username}', email='{self.email}', active={self.is_active})>"
+
+
+class UsageEvent(Base):
+    """Tracks every synthesize/extract action for analytics and KPIs."""
+    __tablename__ = "usage_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False, index=True)
+    event_type = Column(Enum(UsageEventType), nullable=False, index=True)
+    char_count = Column(Integer, nullable=False, default=0)
+    credits_consumed = Column(Integer, nullable=False, default=0)
+    voice_id = Column(String(50), nullable=True)
+    engine = Column(String(20), nullable=True)
+    source_domain = Column(String(256), nullable=True)
+    content_type = Column(String(64), nullable=True)
+    extraction_method = Column(String(64), nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    user = relationship("User", back_populates="usage_events")
+
+    def __repr__(self) -> str:
+        return f"<UsageEvent(id={self.id}, user_id={self.user_id}, type={self.event_type.value}, chars={self.char_count})>"
+
+
+class LifecycleEvent(Base):
+    """Tracks funnel milestones for user lifecycle analytics."""
+    __tablename__ = "lifecycle_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.user_id', ondelete='CASCADE'), nullable=False, index=True)
+    event_name = Column(Enum(LifecycleEventName), nullable=False, index=True)
+    metadata_json = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    user = relationship("User", back_populates="lifecycle_events")
+
+    def __repr__(self) -> str:
+        return f"<LifecycleEvent(id={self.id}, user_id={self.user_id}, event={self.event_name.value})>"
+
+
+class PlatformStats(Base):
+    """Global aggregate stats for marketing pages. Updated incrementally."""
+    __tablename__ = "platform_stats"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stat_key = Column(String(128), unique=True, nullable=False, index=True)
+    stat_value = Column(BigInteger, default=0, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<PlatformStats(key='{self.stat_key}', value={self.stat_value})>"

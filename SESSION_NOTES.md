@@ -146,3 +146,16 @@ find . -name "*.pyc" -delete 2>/dev/null
 - Email: `testdeznutz@gmail.com`
 - Email verified: `true` (manually set)
 - Current credits: `0` (webhook not working yet)
+
+---
+
+## Session - Feb 11, 2026
+
+### Billing Portal 500 Error - FIXED
+**Problem:** Clicking "Billing & Invoice" returns 500 Internal Server Error on `/api/create-billing-portal-session`
+**Cause:** Wrong import in `routes.py:1025` — `from config import EnterpriseConfig` fails because there's no root-level `config.py`
+**Fix:** Changed to `from app.config import EnterpriseConfig` (matching the pattern used elsewhere, e.g. line 962)
+
+### Email Verification Status - CONFIRMED
+**Status:** Login intentionally allows unverified users (`require_email_verification=False`) — dashboard shows nag banner, purchase endpoints gate separately (`routes.py:938`, `routes.py:973`).
+**DB cleanup ready:** `User.email_verified` (bool, default False), `email_verification_token`, `email_verification_token_expires`, `created_at` — can query for unverified accounts older than X days for cleanup.

@@ -23,7 +23,8 @@ from .models import (
     SynthesizeResponse, AnalyticsResponse
 )
 from textract_processor import ContentExtractorManager, extract_content
-from models import User
+from models import User, UsageEventType
+from .analytics import record_usage_event, increment_platform_stat, record_purchase_lifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -548,10 +549,25 @@ class TTSService:
 
             duration = len(combined_audio) / 1000.0
 
-            logger.info(f"✅ Synthesized {text_length} characters for user {user.username} ({user.tier.value.lower()}) in {duration:.1f}s - Credits remaining: {user.credit_balance}")
-
-            # Calculate credits used for this request
+            # Record analytics
             credits_used = (text_length + 999) // 1000
+            try:
+                record_usage_event(
+                    db=db,
+                    user=user,
+                    event_type=UsageEventType.SYNTHESIZE,
+                    char_count=text_length,
+                    credits_consumed=credits_used,
+                    voice_id=voice_id,
+                    engine=engine,
+                    duration_ms=int(duration * 1000),
+                )
+                increment_platform_stat(db, "total_listening_hours_seconds", int(duration))
+                db.commit()
+            except Exception as analytics_err:
+                logger.warning(f"Analytics recording failed (non-fatal): {analytics_err}")
+
+            logger.info(f"✅ Synthesized {text_length} characters for user {user.username} ({user.tier.value.lower()}) in {duration:.1f}s - Credits remaining: {user.credit_balance}")
 
             return SynthesizeResponse(
                 audio_url=audio_url,
@@ -846,6 +862,19 @@ class StripeService:
 
                     db.commit()
                     logger.info(f"✅ Created credit transaction for user {username}: {credits} credits, expires {transaction.expires_at.date()}, new tier: {user.tier.value}")
+
+                    # Record purchase analytics
+                    try:
+                        record_purchase_lifecycle(
+                            db=db,
+                            user=user,
+                            amount_cents=amount_total,
+                            credits=credits,
+                            stripe_session_id=session_id,
+                        )
+                        db.commit()
+                    except Exception as analytics_err:
+                        logger.warning(f"Purchase analytics recording failed (non-fatal): {analytics_err}")
 
                     # Track credit purchase in Dittofeed
                     fire_and_forget(dittofeed_service.identify(
