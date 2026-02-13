@@ -2279,7 +2279,7 @@ async def get_admin_analytics_overview(
     total_users = db.query(func.count(User.user_id)).scalar() or 0
     verified_users = db.query(func.count(User.user_id)).filter(User.email_verified == True).scalar() or 0
     paying_users = db.query(func.count(User.user_id)).filter(User.purchase_count > 0).scalar() or 0
-    total_revenue = db.query(func.coalesce(func.sum(User.total_lifetime_spend), 0)).scalar() or 0
+    total_revenue = db.query(func.coalesce(func.sum(User.total_lifetime_spend), 0)).filter(User.purchase_count > 0).scalar() or 0
     total_synth = db.query(func.coalesce(func.sum(User.total_chars_synthesized), 0)).scalar() or 0
     total_ext = db.query(func.coalesce(func.sum(User.total_chars_extracted), 0)).scalar() or 0
     recent_signups = db.query(func.count(User.user_id)).filter(User.created_at >= thirty_days_ago).scalar() or 0
