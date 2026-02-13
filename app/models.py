@@ -213,8 +213,11 @@ class AdminAnalyticsOverview(BaseModel):
     verified_users: int = 0
     paying_users: int = 0
     total_revenue_cents: int = 0
-    total_chars_synthesized: int = 0
-    total_chars_extracted: int = 0
+    avg_revenue_per_user_cents: int = 0
+    credit_utilization_pct: float = 0.0
+    repeat_purchase_rate_pct: float = 0.0
     signups_last_30_days: int = 0
     purchases_last_30_days: int = 0
+    monthly_revenue: List[Dict[str, Any]] = Field(default_factory=list)
     top_utm_sources: List[Dict[str, Any]] = Field(default_factory=list)
+    top_extraction_domains: List[Dict[str, Any]] = Field(default_factory=list)

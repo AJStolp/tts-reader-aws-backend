@@ -219,6 +219,9 @@ class EnterpriseConfig(BaseSettings):
     SECURITY_ALERT_EMAIL: Optional[str] = None
     ADMIN_ALERT_EMAIL: Optional[str] = None
     PERFORMANCE_ALERT_EMAIL: Optional[str] = None
+
+    # Admin Access Control — comma-separated list of emails allowed to access /api/admin routes
+    ADMIN_EMAILS: str = os.getenv("ADMIN_EMAILS", "")
     
     # API Documentation
     DOCS_ENABLED: bool = True
