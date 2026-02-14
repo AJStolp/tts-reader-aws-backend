@@ -116,7 +116,7 @@ def create_test_users(count: int, tier: str, credits: int, engine):
                             "user_id": user_id,
                             "credits": credits,
                             "purchased_at": datetime.utcnow(),
-                            "expires_at": datetime.utcnow() + timedelta(days=365),
+                            "expires_at": datetime.utcnow() + timedelta(days=90),
                             "created_at": datetime.utcnow()
                         }
                     )
@@ -214,7 +214,7 @@ def create_single_loadtest_user(engine):
                         "user_id": user_id,
                         "credits": credits,
                         "purchased_at": datetime.utcnow(),
-                        "expires_at": datetime.utcnow() + timedelta(days=365),
+                        "expires_at": datetime.utcnow() + timedelta(days=90),
                         "created_at": datetime.utcnow()
                     }
                 )
@@ -266,7 +266,7 @@ def create_single_loadtest_user(engine):
                     "user_id": user_id,
                     "credits": credits,
                     "purchased_at": datetime.utcnow(),
-                    "expires_at": datetime.utcnow() + timedelta(days=365),
+                    "expires_at": datetime.utcnow() + timedelta(days=90),
                     "created_at": datetime.utcnow()
                 }
             )
