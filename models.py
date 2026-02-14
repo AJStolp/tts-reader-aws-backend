@@ -28,7 +28,7 @@ class UserTier(enum.Enum):
 # Transaction status enumeration
 class TransactionStatus(enum.Enum):
     ACTIVE = "ACTIVE"       # Credits available and not expired
-    EXPIRED = "EXPIRED"     # Credits expired (1 year from purchase)
+    EXPIRED = "EXPIRED"     # Credits expired (90 days from purchase)
     CONSUMED = "CONSUMED"   # All credits used up
 
 # Usage event type enumeration
@@ -54,7 +54,7 @@ class LifecycleEventName(enum.Enum):
 class CreditTransaction(Base):
     """
     Credit transaction ledger - tracks individual credit purchases with expiration.
-    Each purchase has its own 1-year expiration from purchase date.
+    Each purchase has its own 90-day expiration from purchase date.
     Credits are deducted FIFO (oldest expiring first).
     """
     __tablename__ = "credit_transactions"
@@ -75,7 +75,7 @@ class CreditTransaction(Base):
 
     # Timestamps
     purchased_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    expires_at = Column(DateTime, nullable=False)  # purchased_at + 1 year
+    expires_at = Column(DateTime, nullable=False)  # purchased_at + 90 days
 
     # Status
     status = Column(Enum(TransactionStatus), default=TransactionStatus.ACTIVE, nullable=False, index=True)
@@ -155,7 +155,7 @@ class User(Base):
     monthly_usage = Column(Integer, default=0, nullable=False)  # DEPRECATED: Keep for migration
     usage_reset_date = Column(DateTime, default=lambda: datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0), nullable=False)  # DEPRECATED
 
-    # Credit system (1 credit = 1,000 characters, expires 1 year from purchase)
+    # Credit system (1 credit = 1,000 characters, expires 90 days from purchase)
     credit_balance = Column(Integer, default=0, nullable=False)  # COMPUTED FIELD - cached sum of active transactions
 
     # Relationship to credit transactions
@@ -398,7 +398,7 @@ class User(Base):
 
     def purchase_credits(self, credit_amount: int, purchase_price: int = None, stripe_payment_id: str = None, stripe_session_id: str = None) -> 'CreditTransaction':
         """
-        Purchase credits by creating a new transaction with 1-year expiration.
+        Purchase credits by creating a new transaction with 90-day expiration.
         Automatically updates tier based on new total.
 
         Args:
@@ -424,9 +424,9 @@ class User(Base):
         else:
             tier_at_purchase = UserTier.FREE
 
-        # Create transaction with 1-year expiration
+        # Create transaction with 90-day expiration (1 business quarter)
         purchased_at = datetime.utcnow()
-        expires_at = purchased_at.replace(year=purchased_at.year + 1)
+        expires_at = purchased_at + timedelta(days=90)
 
         transaction = CreditTransaction(
             user_id=self.user_id,

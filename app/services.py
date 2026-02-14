@@ -849,7 +849,7 @@ class StripeService:
                         logger.error(f"❌ SECURITY: Price mismatch! Expected ~${expected_price/100:.2f}, got ${amount_total/100:.2f} for {credits} credits")
                         raise ValueError("Price verification failed - credits not allocated")
 
-                    # Create credit transaction with 1-year expiration
+                    # Create credit transaction with 90-day expiration
                     # This automatically calculates tier based on total active credits
                     transaction = user.purchase_credits(
                         credit_amount=credits,

@@ -2,8 +2,8 @@
 Background jobs for credit expiration and email notifications.
 
 Run this file daily via cron or scheduler to:
-1. Expire old credit transactions (1 year from purchase)
-2. Send warning emails (30 days, 7 days before expiration)
+1. Expire old credit transactions (90 days from purchase)
+2. Send warning emails (14 days, 3 days before expiration)
 3. Send expiration notification emails
 """
 
@@ -104,7 +104,7 @@ def send_expiration_notification_email(user: User, credits_expired: int):
                 <h2>Credits Expired</h2>
                 <p>Hi {user.username},</p>
                 <p><strong>{credits_expired:,} credits</strong> have expired from your account.</p>
-                <p>These credits were purchased more than one year ago and are no longer available.</p>
+                <p>These credits were purchased more than 90 days ago and are no longer available.</p>
                 <p>Purchase new credits to continue using TTS Reader: <a href="https://unchonk.com/pricing">View Pricing</a></p>
                 <br>
                 <p>Thanks,<br>TTS Reader Team</p>
@@ -120,7 +120,7 @@ def send_expiration_notification_email(user: User, credits_expired: int):
 
 def expire_old_credits(db: Session) -> Tuple[int, int]:
     """
-    Find and expire credit transactions that are older than 1 year.
+    Find and expire credit transactions that are older than 90 days.
     Updates user tiers if necessary.
 
     Args:
@@ -185,50 +185,48 @@ def expire_old_credits(db: Session) -> Tuple[int, int]:
 def send_expiration_warnings(db: Session) -> Tuple[int, int]:
     """
     Send warning emails for credits expiring soon.
-    Sends warnings at 30 days and 7 days before expiration.
+    Sends warnings at 14 days and 3 days before expiration.
 
     Args:
         db: Database session
 
     Returns:
-        Tuple[int, int]: (30-day warnings sent, 7-day warnings sent)
+        Tuple[int, int]: (14-day warnings sent, 3-day warnings sent)
     """
     logger.info("📧 Checking for upcoming credit expirations...")
 
     now = datetime.utcnow()
-    thirty_days_from_now = now + timedelta(days=30)
-    seven_days_from_now = now + timedelta(days=7)
 
-    # 30-day warning window (29-31 days from now)
-    thirty_day_window_start = now + timedelta(days=29)
-    thirty_day_window_end = now + timedelta(days=31)
+    # 14-day warning window (13-15 days from now)
+    fourteen_day_window_start = now + timedelta(days=13)
+    fourteen_day_window_end = now + timedelta(days=15)
 
-    # 7-day warning window (6-8 days from now)
-    seven_day_window_start = now + timedelta(days=6)
-    seven_day_window_end = now + timedelta(days=8)
+    # 3-day warning window (2-4 days from now)
+    three_day_window_start = now + timedelta(days=2)
+    three_day_window_end = now + timedelta(days=4)
 
-    # Find transactions expiring in ~30 days
-    thirty_day_warnings = db.query(CreditTransaction).filter(
+    # Find transactions expiring in ~14 days
+    fourteen_day_warnings = db.query(CreditTransaction).filter(
         and_(
             CreditTransaction.status == TransactionStatus.ACTIVE,
-            CreditTransaction.expires_at >= thirty_day_window_start,
-            CreditTransaction.expires_at <= thirty_day_window_end,
+            CreditTransaction.expires_at >= fourteen_day_window_start,
+            CreditTransaction.expires_at <= fourteen_day_window_end,
             CreditTransaction.credits_remaining > 0
         )
     ).all()
 
-    # Find transactions expiring in ~7 days
-    seven_day_warnings = db.query(CreditTransaction).filter(
+    # Find transactions expiring in ~3 days
+    three_day_warnings = db.query(CreditTransaction).filter(
         and_(
             CreditTransaction.status == TransactionStatus.ACTIVE,
-            CreditTransaction.expires_at >= seven_day_window_start,
-            CreditTransaction.expires_at <= seven_day_window_end,
+            CreditTransaction.expires_at >= three_day_window_start,
+            CreditTransaction.expires_at <= three_day_window_end,
             CreditTransaction.credits_remaining > 0
         )
     ).all()
 
-    thirty_day_count = 0
-    for transaction in thirty_day_warnings:
+    fourteen_day_count = 0
+    for transaction in fourteen_day_warnings:
         days_remaining = (transaction.expires_at - now).days
         send_expiration_warning_email(
             transaction.user,
@@ -236,7 +234,7 @@ def send_expiration_warnings(db: Session) -> Tuple[int, int]:
             transaction.credits_remaining,
             transaction.expires_at
         )
-        thirty_day_count += 1
+        fourteen_day_count += 1
         fire_and_forget(dittofeed_service.track(
             user_id=str(transaction.user.user_id),
             event="Credit Expiration Warning",
@@ -246,12 +244,12 @@ def send_expiration_warnings(db: Session) -> Tuple[int, int]:
                 "creditsExpiring": transaction.credits_remaining,
                 "daysRemaining": days_remaining,
                 "expiresAt": transaction.expires_at.isoformat(),
-                "warningType": "30_day",
+                "warningType": "14_day",
             }
         ))
 
-    seven_day_count = 0
-    for transaction in seven_day_warnings:
+    three_day_count = 0
+    for transaction in three_day_warnings:
         days_remaining = (transaction.expires_at - now).days
         send_expiration_warning_email(
             transaction.user,
@@ -259,7 +257,7 @@ def send_expiration_warnings(db: Session) -> Tuple[int, int]:
             transaction.credits_remaining,
             transaction.expires_at
         )
-        seven_day_count += 1
+        three_day_count += 1
         fire_and_forget(dittofeed_service.track(
             user_id=str(transaction.user.user_id),
             event="Credit Expiration Warning",
@@ -269,13 +267,13 @@ def send_expiration_warnings(db: Session) -> Tuple[int, int]:
                 "creditsExpiring": transaction.credits_remaining,
                 "daysRemaining": days_remaining,
                 "expiresAt": transaction.expires_at.isoformat(),
-                "warningType": "7_day",
+                "warningType": "3_day",
             }
         ))
 
-    logger.info(f"✅ Sent {thirty_day_count} 30-day warnings and {seven_day_count} 7-day warnings")
+    logger.info(f"✅ Sent {fourteen_day_count} 14-day warnings and {three_day_count} 3-day warnings")
 
-    return thirty_day_count, seven_day_count
+    return fourteen_day_count, three_day_count
 
 
 # ============ MAIN JOB RUNNER ============
@@ -304,7 +302,7 @@ def run_daily_jobs():
         logger.info("=" * 60)
         logger.info("✅ Daily jobs completed successfully")
         logger.info(f"   - Expired: {expired_count} transactions ({users_affected} users)")
-        logger.info(f"   - Warnings: {thirty_day_warnings} (30-day), {seven_day_warnings} (7-day)")
+        logger.info(f"   - Warnings: {thirty_day_warnings} (14-day), {seven_day_warnings} (3-day)")
         logger.info("=" * 60)
 
     except Exception as e:
